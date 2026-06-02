@@ -14,9 +14,6 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Schema is managed by Alembic (alembic upgrade head).
-    # Do NOT call create_all() here — it adds a slow round-trip to
-    # Supabase on every cold start and can exceed Render's startup window.
     init_scheduler()
     logger.info("Application started")
     yield
@@ -41,9 +38,12 @@ app.include_router(whatsapp.router)
 
 @app.get("/", tags=["Health"])
 def health():
-    return {
-        "status": "running",
-        "service": "whatsapp-campaign-manager",
-        "version": "1.0.0",
-        "database": "ok" if check_connection() else "unreachable",
-    }
+    """Lightweight health check — must respond instantly for Render's probe."""
+    return {"status": "running", "service": "whatsapp-campaign-manager", "version": "1.0.0"}
+
+
+@app.get("/health/db", tags=["Health"])
+def health_db():
+    """Deep health check including database connectivity (may be slow)."""
+    ok = check_connection()
+    return {"database": "ok" if ok else "unreachable"}
