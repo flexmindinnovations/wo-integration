@@ -157,12 +157,16 @@ These are substituted per-contact before sending.
 
 ### Contacts
 
-| Method | Path             | Description                              |
-| ------ | ---------------- | ---------------------------------------- |
-| POST   | `/contacts/sync` | Pull contacts from Odoo into PostgreSQL  |
-| GET    | `/contacts/`     | List all local contacts                  |
+| Method | Path             | Description                                     |
+| ------ | ---------------- | ----------------------------------------------- |
+| POST   | `/contacts/sync` | Pull contacts from Odoo into PostgreSQL         |
+| POST   | `/contacts/`     | Create a new contact in Odoo and local database |
+| GET    | `/contacts/`     | List all local contacts                         |
+| GET    | `/contacts/{id}` | Get a specific contact by ID                    |
+| PUT    | `/contacts/{id}` | Update contact in Odoo and local database       |
 
 **POST /contacts/sync** — Sync Odoo contacts into local database:
+
 ```bash
 curl -X POST http://localhost:8000/contacts/sync
 ```
@@ -170,14 +174,40 @@ curl -X POST http://localhost:8000/contacts/sync
 Response:
 ```json
 {
-  "total_synced": 150,
   "created": 145,
   "updated": 5,
-  "failed": 0
+  "skipped": 0,
+  "total": 150
+}
+```
+
+**POST /contacts/** — Create a new contact (creates in Odoo first, then locally):
+
+```bash
+curl -X POST http://localhost:8000/contacts/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Mohammad Imran",
+    "phone": "918446998579",
+    "email": "imran@example.com"
+  }'
+```
+
+Response:
+```json
+{
+  "id": 201,
+  "name": "Mohammad Imran",
+  "phone": "918446998579",
+  "email": "imran@example.com",
+  "odoo_partner_id": 5432,
+  "last_synced_at": "2026-06-02T14:30:00",
+  "created_at": "2026-06-02T14:30:00"
 }
 ```
 
 **GET /contacts/** — List all contacts:
+
 ```bash
 curl http://localhost:8000/contacts/
 ```
@@ -190,9 +220,65 @@ Response:
     "name": "Mohammad Imran",
     "phone": "918446998579",
     "email": "user@example.com",
-    "synced_at": "2026-06-02T10:30:00"
+    "odoo_partner_id": 5432,
+    "last_synced_at": "2026-06-02T10:30:00",
+    "created_at": "2026-06-02T10:30:00"
   }
 ]
+```
+
+**GET /contacts/{id}** — Get a specific contact:
+
+```bash
+curl http://localhost:8000/contacts/1
+```
+
+Response (same as above):
+```json
+{
+  "id": 1,
+  "name": "Mohammad Imran",
+  "phone": "918446998579",
+  "email": "user@example.com",
+  "odoo_partner_id": 5432,
+  "last_synced_at": "2026-06-02T10:30:00",
+  "created_at": "2026-06-02T10:30:00"
+}
+```
+
+**PUT /contacts/{id}** — Update a contact (updates in Odoo first, then locally):
+
+```bash
+curl -X PUT http://localhost:8000/contacts/1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Mohammad Imran Updated",
+    "phone": "919876543210",
+    "email": "newemail@example.com"
+  }'
+```
+
+All fields are optional — only provided fields will be updated:
+
+```bash
+curl -X PUT http://localhost:8000/contacts/1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phone": "919876543210"
+  }'
+```
+
+Response:
+```json
+{
+  "id": 1,
+  "name": "Mohammad Imran",
+  "phone": "919876543210",
+  "email": "newemail@example.com",
+  "odoo_partner_id": 5432,
+  "last_synced_at": "2026-06-02T14:35:00",
+  "created_at": "2026-06-02T10:30:00"
+}
 ```
 
 ### Campaigns

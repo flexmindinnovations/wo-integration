@@ -42,6 +42,48 @@ class OdooService:
             {"fields": ["id", "name", "phone", "email"]},
         )
 
+    def create_partner(self, name: str, phone: str, email: str | None = None) -> int:
+        """
+        Create a new contact in Odoo. Returns the Odoo partner ID.
+        """
+        phone = _normalize_phone(phone)
+        if not phone:
+            raise ValueError("Phone number must contain at least one digit")
+
+        partner_id = self._execute(
+            "res.partner",
+            "create",
+            [{
+                "name": name,
+                "phone": phone,
+                "email": email or False,
+            }],
+        )
+        logger.info("Contact created in Odoo", extra={"partner_id": partner_id, "name": name})
+        return partner_id
+
+    def update_partner(self, partner_id: int, name: str | None = None, phone: str | None = None, email: str | None = None) -> bool:
+        """
+        Update an existing contact in Odoo. Returns True if successful.
+        """
+        update_data = {}
+        if name is not None:
+            update_data["name"] = name
+        if phone is not None:
+            phone = _normalize_phone(phone)
+            if not phone:
+                raise ValueError("Phone number must contain at least one digit")
+            update_data["phone"] = phone
+        if email is not None:
+            update_data["email"] = email or False
+
+        if not update_data:
+            return True  # Nothing to update
+
+        self._execute("res.partner", "write", [[partner_id], update_data])
+        logger.info("Contact updated in Odoo", extra={"partner_id": partner_id, "fields": list(update_data.keys())})
+        return True
+
     def sync_contacts(self, db: Session) -> dict:
         partners = self.fetch_partners()
         created = updated = skipped = 0
