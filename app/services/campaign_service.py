@@ -24,6 +24,8 @@ class CampaignService:
             name=payload.name,
             topic=payload.topic,
             template_name=payload.template_name,
+            template_language=payload.template_language,
+            template_components=payload.template_components,
             status=status,
             scheduled_at=payload.scheduled_at,
         )

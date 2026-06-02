@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
-from sqlalchemy import DateTime, Enum, Integer, String, Text
+from sqlalchemy import DateTime, Enum, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -24,6 +24,8 @@ class Campaign(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     topic: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     template_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    template_language: Mapped[Optional[str]] = mapped_column(String(10), default="en", nullable=True)
+    template_components: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     status: Mapped[CampaignStatus] = mapped_column(
         Enum(CampaignStatus), default=CampaignStatus.draft, nullable=False
     )

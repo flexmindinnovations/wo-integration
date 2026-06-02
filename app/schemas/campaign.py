@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict
 from app.models.campaign import CampaignStatus
 from app.models.campaign_message import DeliveryStatus
@@ -9,7 +9,31 @@ class CampaignCreate(BaseModel):
     name: str
     topic: Optional[str] = None
     template_name: str
+    template_language: str = "en"
+    template_components: Optional[list[dict[str, Any]]] = None
     scheduled_at: Optional[datetime] = None
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Payment Reminder June",
+                "topic": "Outstanding Invoice Reminder",
+                "template_name": "payment_reminder",
+                "template_language": "en",
+                "template_components": [
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": "{{contact_name}}"},
+                            {"type": "text", "text": "INR"},
+                            {"type": "text", "text": "1500"},
+                            {"type": "text", "text": "Flexmind Innovations"},
+                        ],
+                    }
+                ],
+            }
+        }
+    )
 
 
 class CampaignOut(BaseModel):
@@ -17,6 +41,8 @@ class CampaignOut(BaseModel):
     name: str
     topic: Optional[str] = None
     template_name: str
+    template_language: Optional[str] = None
+    template_components: Optional[list[dict[str, Any]]] = None
     status: CampaignStatus
     scheduled_at: Optional[datetime] = None
     created_at: datetime

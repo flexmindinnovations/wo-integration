@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from datetime import datetime
@@ -136,10 +137,11 @@ def _send_with_retry(
         try:
             # AI extension point: replace _build_components() with an AI service
             # that uses campaign.topic to generate personalised message variables.
-            components = _build_components(contact)
+            components = _build_components(campaign, contact)
             result = whatsapp.send_template(
                 phone=contact.phone,
                 template_name=campaign.template_name,
+                language_code=campaign.template_language or "en",
                 components=components,
             )
             wa_msg_id = (result.get("messages") or [{}])[0].get("id")
@@ -180,21 +182,41 @@ def _send_with_retry(
     return False
 
 
-def _build_components(contact: Contact) -> list[dict]:
+def _build_components(campaign: Campaign, contact: Contact) -> list[dict] | None:
     """
     Build WhatsApp template body components.
 
-    AI extension point: future implementation will call an AI service with
-    campaign.topic and contact data to generate dynamic message variables.
+    If the campaign has stored template_components, substitute contact-specific
+    placeholders and return them. Supported placeholders:
+        {{contact_name}}   → contact's full name
+        {{contact_phone}}  → contact's phone number
+        {{contact_email}}  → contact's email (empty string if none)
+
+    If no components are stored (e.g. templates with no variables like hello_world),
+    returns None so the message is sent without body parameters.
+
+    AI extension point: replace this function with an AI service call that uses
+    campaign.topic to dynamically generate the parameter values per contact.
     """
-    return [
-        {
-            "type": "body",
-            "parameters": [
-                {"type": "text", "text": contact.name},
-                {"type": "text", "text": "INR"},
-                {"type": "text", "text": "0"},
-                {"type": "text", "text": "Flexmind Innovations"},
-            ],
-        }
-    ]
+    if campaign.template_components:
+        raw = json.dumps(campaign.template_components)
+        raw = raw.replace("{{contact_name}}", contact.name)
+        raw = raw.replace("{{contact_phone}}", contact.phone)
+        raw = raw.replace("{{contact_email}}", contact.email or "")
+        return json.loads(raw)
+
+    # Legacy fallback for payment_reminder campaigns created before template_components
+    if campaign.template_name == "payment_reminder":
+        return [
+            {
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": contact.name},
+                    {"type": "text", "text": "INR"},
+                    {"type": "text", "text": "0"},
+                    {"type": "text", "text": "Flexmind Innovations"},
+                ],
+            }
+        ]
+
+    return None
