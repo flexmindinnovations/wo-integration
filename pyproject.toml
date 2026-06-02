@@ -1,0 +1,18 @@
+[project]
+name = "whatsapp-message-sender"
+version = "1.0.0"
+description = "WhatsApp Campaign Management System — bulk messaging with Odoo sync"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.1",
+    "python-dotenv>=1.2.2",
+    "requests>=2.34.2",
+    "uvicorn[standard]>=0.34.0",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "psycopg2-binary>=2.9.0",
+    "apscheduler>=3.10.0",
+]

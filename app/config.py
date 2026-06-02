@@ -1,0 +1,29 @@
+from typing import Optional
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    # Odoo
+    ODOO_URL: str = ""
+    ODOO_DB: str = ""
+    ODOO_USERNAME: str = ""
+    ODOO_PASSWORD: Optional[str] = None
+    ODOO_API_KEY: Optional[str] = None
+
+    # Meta WhatsApp Cloud API
+    WHATSAPP_TOKEN: str = ""
+    WHATSAPP_PHONE_NUMBER_ID: str = ""
+    WHATSAPP_WEBHOOK_VERIFY_TOKEN: str = "whatsapp_verify_token"
+
+    # PostgreSQL
+    DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/whatsapp_campaigns"
+
+    # Campaign execution
+    CAMPAIGN_BATCH_SIZE: int = 50
+    MESSAGE_DELAY_SECONDS: float = 1.0
+    MAX_RETRY_ATTEMPTS: int = 3
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
+settings = Settings()
