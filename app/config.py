@@ -18,6 +18,15 @@ class Settings(BaseSettings):
     # PostgreSQL
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/whatsapp_campaigns"
 
+    # CORS
+    FRONTEND_ORIGINS: str = (
+        "http://localhost:3000,"
+        "http://localhost:5173,"
+        "http://127.0.0.1:3000,"
+        "http://127.0.0.1:5173,"
+        "https://campaign-desk.vercel.app"
+    )
+
     # Campaign execution
     CAMPAIGN_BATCH_SIZE: int = 50
     MESSAGE_DELAY_SECONDS: float = 1.0
