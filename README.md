@@ -116,13 +116,44 @@ API docs: <http://localhost:8000/docs>
 
 ---
 
+## WhatsApp Templates
+
+The system supports **9 approved Meta WhatsApp templates**. Each template has fixed parameters that must be provided when creating a campaign.
+
+### Template Reference
+
+| Template Name           | Parameters | Use Case                    |
+| ----------------------- | ---------- | --------------------------- |
+| `payment_reminder`      | 4 params   | Invoice payment reminders   |
+| `invoice`               | 6 params   | Invoice notifications       |
+| `sale`                  | 6 params   | Order confirmations         |
+| `hello_world`           | 0 params   | Testing/onboarding          |
+| `pos_marketing`         | Custom     | Point of Sale marketing     |
+| `pos_receipt`           | Custom     | POS Receipt                 |
+| `payment_receipt`       | Custom     | Payment Receipt             |
+| `payment_link`          | Custom     | Payment Link                |
+| `point_sale_marketing`  | Custom     | Point of Sale Marketing     |
+
+### Contact Placeholder Substitution
+
+When creating campaigns, use these placeholders in `template_components` to dynamically insert contact data:
+
+- `{{contact_name}}` → Contact's full name from Odoo
+- `{{contact_phone}}` → Contact's phone number
+- `{{contact_email}}` → Contact's email address (empty string if not set)
+
+These are substituted per-contact before sending.
+
+---
+
 ## API Reference
 
 ### Health
 
 | Method | Path | Description  |
 | ------ | ---- | ------------ |
-| GET    | `/`  | Health check |
+| GET    | `/`  | Health check (instant) |
+| GET    | `/health/db` | Database connectivity check |
 
 ### Contacts
 
@@ -130,6 +161,39 @@ API docs: <http://localhost:8000/docs>
 | ------ | ---------------- | ---------------------------------------- |
 | POST   | `/contacts/sync` | Pull contacts from Odoo into PostgreSQL  |
 | GET    | `/contacts/`     | List all local contacts                  |
+
+**POST /contacts/sync** — Sync Odoo contacts into local database:
+```bash
+curl -X POST http://localhost:8000/contacts/sync
+```
+
+Response:
+```json
+{
+  "total_synced": 150,
+  "created": 145,
+  "updated": 5,
+  "failed": 0
+}
+```
+
+**GET /contacts/** — List all contacts:
+```bash
+curl http://localhost:8000/contacts/
+```
+
+Response:
+```json
+[
+  {
+    "id": 1,
+    "name": "Mohammad Imran",
+    "phone": "918446998579",
+    "email": "user@example.com",
+    "synced_at": "2026-06-02T10:30:00"
+  }
+]
+```
 
 ### Campaigns
 
@@ -143,12 +207,295 @@ API docs: <http://localhost:8000/docs>
 | GET    | `/campaigns/{id}/messages`    | Per-contact message records                        |
 | GET    | `/campaigns/{id}/analytics`   | Delivery analytics                                 |
 
+#### POST /campaigns/ — Create campaign
+
+**Payment Reminder** (4 parameters):
+```bash
+curl -X POST http://localhost:8000/campaigns/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Payment Reminder June 2026",
+    "topic": "Outstanding Invoice Reminder",
+    "template_name": "payment_reminder",
+    "template_language": "en",
+    "template_components": [
+      {
+        "type": "body",
+        "parameters": [
+          {"type": "text", "text": "{{contact_name}}"},
+          {"type": "text", "text": "INR"},
+          {"type": "text", "text": "5000"},
+          {"type": "text", "text": "Flexmind Innovations"}
+        ]
+      }
+    ]
+  }'
+```
+
+**Invoice** (6 parameters):
+```bash
+curl -X POST http://localhost:8000/campaigns/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Invoice Notification June 2026",
+    "topic": "Invoice Payment Notification",
+    "template_name": "invoice",
+    "template_language": "en",
+    "template_components": [
+      {
+        "type": "body",
+        "parameters": [
+          {"type": "text", "text": "{{contact_name}}"},
+          {"type": "text", "text": "INV/2026/00001"},
+          {"type": "text", "text": "Flexmind Innovations"},
+          {"type": "text", "text": "₹"},
+          {"type": "text", "text": "5000"},
+          {"type": "text", "text": "https://flexmindinnovations.odoo.com/my/invoices"}
+        ]
+      }
+    ]
+  }'
+```
+
+**Sale Order** (6 parameters):
+```bash
+curl -X POST http://localhost:8000/campaigns/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Sale Order Confirmation June 2026",
+    "topic": "Sales Order Confirmed",
+    "template_name": "sale",
+    "template_language": "en",
+    "template_components": [
+      {
+        "type": "body",
+        "parameters": [
+          {"type": "text", "text": "{{contact_name}}"},
+          {"type": "text", "text": "SO/2026/00001"},
+          {"type": "text", "text": "Flexmind Innovations"},
+          {"type": "text", "text": "₹"},
+          {"type": "text", "text": "12000"},
+          {"type": "text", "text": "https://flexmindinnovations.odoo.com/my/orders"}
+        ]
+      }
+    ]
+  }'
+```
+
+**Hello World** (no parameters):
+```bash
+curl -X POST http://localhost:8000/campaigns/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Hello World Test",
+    "topic": "Test Campaign",
+    "template_name": "hello_world",
+    "template_language": "en"
+  }'
+```
+
+Response (all):
+```json
+{
+  "id": 1,
+  "name": "Payment Reminder June 2026",
+  "topic": "Outstanding Invoice Reminder",
+  "template_name": "payment_reminder",
+  "template_language": "en",
+  "template_components": [...],
+  "status": "draft",
+  "scheduled_at": null,
+  "created_at": "2026-06-02T10:30:00",
+  "updated_at": "2026-06-02T10:30:00"
+}
+```
+
+#### GET /campaigns/ — List all campaigns
+
+```bash
+curl http://localhost:8000/campaigns/
+```
+
+Response:
+```json
+[
+  {
+    "id": 1,
+    "name": "Payment Reminder June 2026",
+    "status": "completed",
+    "template_name": "payment_reminder",
+    "created_at": "2026-06-02T10:30:00",
+    "updated_at": "2026-06-02T11:45:00"
+  }
+]
+```
+
+#### POST /campaigns/{id}/start — Start a campaign
+
+```bash
+curl -X POST http://localhost:8000/campaigns/1/start
+```
+
+Response:
+```json
+{
+  "id": 1,
+  "status": "running",
+  "message": "Campaign started. Background job is processing..."
+}
+```
+
+#### GET /campaigns/{id}/analytics — Campaign analytics
+
+```bash
+curl http://localhost:8000/campaigns/1/analytics
+```
+
+Response:
+```json
+{
+  "campaign_id": 1,
+  "campaign_name": "Payment Reminder June 2026",
+  "status": "completed",
+  "total_contacts": 150,
+  "pending": 0,
+  "sent": 145,
+  "delivered": 138,
+  "read": 92,
+  "failed": 5,
+  "delivery_rate": 0.92,
+  "read_rate": 0.613
+}
+```
+
+#### GET /campaigns/{id}/messages — Message records
+
+```bash
+curl http://localhost:8000/campaigns/1/messages?skip=0&limit=10
+```
+
+Response:
+```json
+[
+  {
+    "id": 1,
+    "campaign_id": 1,
+    "contact_id": 5,
+    "whatsapp_message_id": "wamid.xxx",
+    "delivery_status": "delivered",
+    "sent_at": "2026-06-02T10:35:00",
+    "error_message": null,
+    "retry_count": 1,
+    "created_at": "2026-06-02T10:30:00"
+  }
+]
+```
+
 ### Webhooks
 
 | Method | Path                 | Description                                         |
 | ------ | -------------------- | --------------------------------------------------- |
 | GET    | `/webhooks/whatsapp` | WhatsApp webhook verification handshake             |
 | POST   | `/webhooks/whatsapp` | Receive delivery status + incoming message events   |
+
+**Webhook Verification** (Meta sends this to verify your endpoint):
+```bash
+curl "http://localhost:8000/webhooks/whatsapp?hub.mode=subscribe&hub.challenge=test123&hub.verify_token=YOUR_VERIFY_TOKEN"
+```
+
+**Webhook Events** (Meta sends delivery status updates):
+Meta will POST delivery updates to this endpoint automatically. No manual action required.
+
+Example incoming webhook payload (delivery update):
+```json
+{
+  "entry": [{
+    "changes": [{
+      "value": {
+        "statuses": [{
+          "id": "wamid.xxx",
+          "status": "delivered",
+          "timestamp": "1234567890"
+        }]
+      }
+    }]
+  }]
+}
+```
+
+---
+
+## Database Schema
+
+### contacts table
+
+Synced from Odoo via `/contacts/sync` endpoint.
+
+```sql
+CREATE TABLE contacts (
+    id INTEGER PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    phone VARCHAR(20) NOT NULL UNIQUE,
+    email VARCHAR(255),
+    synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### campaigns table
+
+Stores campaign metadata and configuration.
+
+```sql
+CREATE TABLE campaigns (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    topic TEXT,
+    template_name VARCHAR(255) NOT NULL,
+    template_language VARCHAR(10) DEFAULT 'en',
+    template_components JSONB,
+    status VARCHAR(50) DEFAULT 'draft',
+    scheduled_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Statuses:** `draft` → `scheduled` (if future scheduled_at) or `draft` → `running` → `completed`/`failed`
+
+**template_components JSON structure:**
+
+```json
+[
+  {
+    "type": "body",
+    "parameters": [
+      {"type": "text", "text": "value1"},
+      {"type": "text", "text": "value2"},
+      ...
+    ]
+  }
+]
+```
+
+### campaign_messages table
+
+Per-contact message delivery tracking. Created when campaign starts.
+
+```sql
+CREATE TABLE campaign_messages (
+    id SERIAL PRIMARY KEY,
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id),
+    contact_id INTEGER NOT NULL REFERENCES contacts(id),
+    whatsapp_message_id VARCHAR(255),
+    delivery_status VARCHAR(50) DEFAULT 'pending',
+    sent_at TIMESTAMP,
+    error_message TEXT,
+    retry_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Delivery Statuses:** `pending` → `sent` → `delivered` → `read` (or `failed` at any point)
 
 ---
 
@@ -250,3 +597,139 @@ Rollback one step:
 ```bash
 uv run alembic downgrade -1
 ```
+
+---
+
+## Deployment
+
+### Render + Supabase
+
+This system is designed to run on [Render](https://render.com) with [Supabase](https://supabase.com) PostgreSQL backend.
+
+#### 1. Supabase Setup
+
+1. Create a Supabase project
+2. Get your PostgreSQL connection string from **Settings → Database**
+3. Use the **Transaction Pooler** connection string (port 6543 instead of 5432) to avoid connection exhaustion under APScheduler
+4. Copy the `DATABASE_URL` for `.env`
+
+#### 2. Environment Variables
+
+Create a `.env` file with:
+
+```env
+# Odoo
+ODOO_URL=https://your-instance.odoo.com
+ODOO_DB=your_db
+ODOO_USERNAME=user@example.com
+ODOO_PASSWORD=your_password
+
+# WhatsApp Cloud API
+WHATSAPP_TOKEN=your_bearer_token
+WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=your_secret_token
+
+# PostgreSQL (Supabase Transaction Pooler)
+DATABASE_URL=postgresql://user:pass@db.supabase.co:6543/postgres
+
+# Campaign tuning (optional)
+CAMPAIGN_BATCH_SIZE=50
+MESSAGE_DELAY_SECONDS=1
+MAX_RETRY_ATTEMPTS=3
+```
+
+#### 3. Render Deployment
+
+Create `render.yaml` in your repo root:
+
+```yaml
+services:
+  - type: web
+    name: whatsapp-campaigns
+    env: python
+    plan: standard
+    region: oregon
+    buildCommand: pip install uv && uv sync && uv run alembic upgrade head
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+
+  - type: cron
+    name: scheduler-cleanup
+    schedule: "0 */6 * * *"
+    runCommand: curl https://your-app.onrender.com/health/db
+
+envVars:
+  - key: ODOO_URL
+    sync: false
+  - key: ODOO_DB
+    sync: false
+  - key: ODOO_USERNAME
+    sync: false
+  - key: WHATSAPP_TOKEN
+    sync: false
+  - key: WHATSAPP_PHONE_NUMBER_ID
+    sync: false
+  - key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
+    sync: false
+  - key: DATABASE_URL
+    sync: false
+```
+
+#### 4. Deploy Steps
+
+1. Push your code to GitHub
+2. Create a new service on Render
+3. Connect your GitHub repo
+4. Paste environment variables (from `.env`)
+5. Render will run `buildCommand` automatically on each deploy
+6. Migrations run before the service starts
+7. APScheduler will initialize on startup
+
+#### 5. Webhook Configuration (Meta)
+
+After deployment:
+
+1. Go to **Meta Developer Console → WhatsApp → Configuration**
+2. Set **Callback URL** to `https://your-app.onrender.com/webhooks/whatsapp`
+3. Set **Verify Token** to value of `WHATSAPP_WEBHOOK_VERIFY_TOKEN`
+4. Subscribe to **messages** and **message_status_updates** webhooks
+
+#### 6. Monitor Logs
+
+View logs in Render dashboard:
+
+- **Events** tab: deployment progress
+- **Logs** tab: application output, errors, scheduled tasks
+
+#### 7. Health Checks
+
+- `GET /` — instant health check
+- `GET /health/db` — database connectivity check
+- Render's probe calls `GET /` every 30 seconds
+
+#### 8. Troubleshooting Deployment
+
+##### Build fails: ModuleNotFoundError
+
+- Ensure `pyproject.toml` is in repo root (not in `app/` subdirectory)
+- Check Render "Root Directory" is empty (not set to `app/`)
+
+##### Database migration hangs
+
+- Use Supabase Transaction Pooler (port 6543), not standard pooler (5432)
+- Verify `DATABASE_URL` in environment variables
+- Check Supabase database is not in pause state
+
+##### APScheduler errors
+
+- Jobs use MemoryJobStore (not database) to avoid connection at startup
+- Scheduled campaigns survive restarts only if job was persisted before restart
+- For critical scheduled campaigns, use `/campaigns/{id}/start` endpoint instead
+
+##### Webhook not receiving events
+
+- Verify **Callback URL** is reachable from internet (`curl https://your-app.onrender.com/webhooks/whatsapp?hub.mode=subscribe`)
+- Check **Verify Token** matches `WHATSAPP_WEBHOOK_VERIFY_TOKEN`
+- Ensure webhooks are **subscribed** in Meta console
