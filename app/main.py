@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.database import Base, check_connection, engine
+from app.database import check_connection
 from app.routers import campaigns, contacts, whatsapp
 from app.services.scheduler_service import init_scheduler, shutdown_scheduler
 from app.utils.logging import setup_logging
@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    # Schema is managed by Alembic (alembic upgrade head).
+    # Do NOT call create_all() here — it adds a slow round-trip to
+    # Supabase on every cold start and can exceed Render's startup window.
     init_scheduler()
     logger.info("Application started")
     yield
