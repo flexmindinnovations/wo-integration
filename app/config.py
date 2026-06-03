@@ -15,8 +15,8 @@ class Settings(BaseSettings):
     WHATSAPP_PHONE_NUMBER_ID: str = ""
     WHATSAPP_WEBHOOK_VERIFY_TOKEN: str = "whatsapp_verify_token"
 
-    # Anthropic / Claude AI
-    ANTHROPIC_API_KEY: str = ""
+    # Google Gemini AI
+    GOOGLE_GEMINI_API_KEY: str = ""
 
     # PostgreSQL
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/whatsapp_campaigns"

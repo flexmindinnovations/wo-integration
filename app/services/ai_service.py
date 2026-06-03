@@ -1,6 +1,6 @@
 import logging
 from sqlalchemy.orm import Session
-import anthropic
+import google.generativeai as genai
 
 from app.config import settings
 from app.models.conversation_message import ConversationMessage, MessageRole
@@ -19,12 +19,13 @@ _CONTEXT_WINDOW = 10
 
 class AiService:
     def __init__(self) -> None:
-        self._client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        genai.configure(api_key=settings.GOOGLE_GEMINI_API_KEY)
+        self._model = genai.GenerativeModel("gemini-1.5-flash")
 
     def generate_reply(self, phone: str, db: Session) -> str:
         """
         Fetch the last _CONTEXT_WINDOW messages for `phone`, build the
-        Claude messages list, call the API, and return the reply text.
+        Gemini messages list, call the API, and return the reply text.
 
         Raises on API failure — callers must handle exceptions.
         """
@@ -38,21 +39,29 @@ class AiService:
         # Reverse so oldest-first (chronological) order for the API
         history = list(reversed(history))
 
-        messages = [
-            {"role": msg.role.value, "content": msg.content}
-            for msg in history
-        ]
+        # Build conversation history for Gemini
+        # Gemini expects: [{"role": "user"/"model", "parts": [{"text": "..."}]}]
+        messages = []
+        for msg in history:
+            role = "user" if msg.role.value == "user" else "model"
+            messages.append({
+                "role": role,
+                "parts": [{"text": msg.content}]
+            })
 
-        response = self._client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
-            system=_SYSTEM_PROMPT,
-            messages=messages,
+        # Start a chat session with system instruction
+        chat = self._model.start_chat(history=messages)
+
+        response = chat.send_message(
+            _SYSTEM_PROMPT,
+            generation_config=genai.types.GenerationConfig(
+                max_output_tokens=1024,
+            ),
         )
 
-        reply: str = response.content[0].text
+        reply: str = response.text
         logger.info(
             "AI reply generated",
-            extra={"phone": phone, "input_tokens": response.usage.input_tokens},
+            extra={"phone": phone, "model": "gemini-1.5-flash"},
         )
         return reply
