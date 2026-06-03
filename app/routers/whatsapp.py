@@ -5,6 +5,9 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models.campaign_message import CampaignMessage, DeliveryStatus
+from app.models.conversation_message import ConversationMessage, MessageRole
+from app.services.ai_service import AiService
+from app.services.whatsapp_service import WhatsAppService
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 logger = logging.getLogger(__name__)
@@ -49,7 +52,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
 
                 # AI extension point: incoming customer messages
                 for message in value.get("messages", []):
-                    _handle_incoming_message(message)
+                    _handle_incoming_message(message, db)
 
     except Exception:
         logger.exception("Error processing WhatsApp webhook")
@@ -94,16 +97,79 @@ def _process_status_update(event: dict, db: Session) -> None:
     )
 
 
-def _handle_incoming_message(message: dict) -> None:
+def _handle_incoming_message(message: dict, db: Session) -> None:
     """
-    Extension point for AI-powered reply handling.
+    Handle an inbound WhatsApp message:
+      1. Only process text messages; log and skip everything else.
+      2. Deduplicate by wamid to handle webhook retries.
+      3. Persist user message → generate AI reply → persist reply → send reply.
+      4. Never raise — the caller must always return HTTP 200.
+    """
+    msg_type: str = message.get("type", "")
+    phone: str = message.get("from", "")
+    wamid: str = message.get("id", "")
 
-    Future implementation:
-        1. Extract text from `message["text"]["body"]`
-        2. Send to OpenAI / Claude with conversation context
-        3. Call WhatsAppService().send_text(phone, ai_reply)
-    """
-    logger.info(
-        "Incoming WhatsApp message — AI handler not yet implemented",
-        extra={"sender": message.get("from"), "msg_type": message.get("type")},
-    )
+    if msg_type != "text":
+        logger.info(
+            "Non-text message received — skipping",
+            extra={"phone": phone, "type": msg_type},
+        )
+        return
+
+    text_body: str = (message.get("text") or {}).get("body", "").strip()
+    if not text_body:
+        logger.warning("Text message with empty body", extra={"phone": phone, "wamid": wamid})
+        return
+
+    try:
+        # Deduplication
+        if wamid:
+            existing = (
+                db.query(ConversationMessage)
+                .filter(ConversationMessage.wamid == wamid)
+                .first()
+            )
+            if existing:
+                logger.info(
+                    "Duplicate message — already processed",
+                    extra={"phone": phone, "wamid": wamid},
+                )
+                return
+
+        # Persist user message
+        user_msg = ConversationMessage(
+            contact_phone=phone,
+            role=MessageRole.user,
+            content=text_body,
+            wamid=wamid or None,
+        )
+        db.add(user_msg)
+        db.commit()
+        db.refresh(user_msg)
+
+        # Generate AI reply
+        ai_reply = AiService().generate_reply(phone, db)
+
+        # Persist assistant message
+        assistant_msg = ConversationMessage(
+            contact_phone=phone,
+            role=MessageRole.assistant,
+            content=ai_reply,
+            wamid=None,
+        )
+        db.add(assistant_msg)
+        db.commit()
+
+        # Send reply via WhatsApp
+        WhatsAppService().send_text(phone, ai_reply)
+        logger.info("AI reply sent", extra={"phone": phone})
+
+    except Exception:
+        logger.exception(
+            "Error in AI message handler — suppressing to preserve 200 response",
+            extra={"phone": phone, "wamid": wamid},
+        )
+        try:
+            db.rollback()
+        except Exception:
+            pass

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import check_connection
 from app.config import settings
-from app.routers import campaigns, contacts, whatsapp
+from app.routers import campaigns, contacts, conversations, whatsapp
 from app.services.scheduler_service import init_scheduler, shutdown_scheduler
 from app.utils.logging import setup_logging
 
@@ -47,6 +47,7 @@ app.add_middleware(
 
 app.include_router(campaigns.router)
 app.include_router(contacts.router)
+app.include_router(conversations.router)
 app.include_router(whatsapp.router)
 
 

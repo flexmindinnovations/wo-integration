@@ -20,6 +20,7 @@ from app.database import Base  # noqa: E402
 import app.models.contact  # noqa: E402, F401
 import app.models.campaign  # noqa: E402, F401
 import app.models.campaign_message  # noqa: E402, F401
+import app.models.conversation_message  # noqa: E402, F401
 
 target_metadata = Base.metadata
 
