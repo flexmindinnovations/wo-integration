@@ -201,8 +201,8 @@ class OdooService:
                     ["state", "=", "posted"]
                 ]],
                 {
-                    "fields": ["id", "name", "payment_date", "amount"],
-                    "order": "payment_date DESC",
+                    "fields": ["id", "name", "date", "amount"],
+                    "order": "date DESC",
                     "limit": limit
                 }
             )

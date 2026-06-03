@@ -149,7 +149,8 @@ class AiService:
             if has_payments:
                 payment = odoo_context["payments"][0] if odoo_context["payments"] else None
                 if payment:
-                    prompt += f"Last Payment: {payment['payment_date']} (₹{payment.get('amount', 0):.2f})\n\n"
+                    payment_date = payment.get('date') or payment.get('payment_date', 'N/A')
+                    prompt += f"Last Payment: {payment_date} (₹{payment.get('amount', 0):.2f})\n\n"
 
             prompt += (
                 "Use this account information to provide personalized, helpful responses. "
