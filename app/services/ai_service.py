@@ -20,7 +20,7 @@ _CONTEXT_WINDOW = 10
 class AiService:
     def __init__(self) -> None:
         genai.configure(api_key=settings.GOOGLE_GEMINI_API_KEY)
-        self._model = genai.GenerativeModel("gemini-1.5-flash")
+        self._model = genai.GenerativeModel("gemini-2.5-flash")
 
     def generate_reply(self, phone: str, db: Session) -> str:
         """
@@ -62,6 +62,6 @@ class AiService:
         reply: str = response.text
         logger.info(
             "AI reply generated",
-            extra={"phone": phone, "model": "gemini-1.5-flash"},
+            extra={"phone": phone, "model": "gemini-2.5-flash"},
         )
         return reply
