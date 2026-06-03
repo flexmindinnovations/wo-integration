@@ -234,30 +234,32 @@ class OdooService:
             orders = self.fetch_customer_orders(partner_id)
             payments = self.fetch_customer_payments(partner_id)
 
+            has_data = bool(invoices or orders or payments)
             context = {
                 "partner": partner,
                 "invoices": invoices,
                 "orders": orders,
                 "payments": payments,
-                "company_name": partner.get("name", "")
+                "company_name": partner.get("name", ""),
+                "access_success": True  # Odoo fetch succeeded
             }
 
-            has_data = bool(invoices or orders or payments)
             logger.info(
-                "Customer context fetched",
+                "Customer context fetched successfully",
                 extra={"partner_id": partner_id, "has_business_data": has_data}
             )
             return context
         except Exception as e:
             logger.error(
-                "Error fetching customer context",
+                "Error fetching customer context — Odoo access failed",
                 extra={"partner_id": partner_id, "error": str(e)}
             )
-            # Return partner info only, even if models failed
+            # Return empty context with failure flag
             return {
                 "partner": {},
                 "invoices": [],
                 "orders": [],
                 "payments": [],
-                "company_name": ""
+                "company_name": "",
+                "access_success": False  # Odoo fetch failed
             }

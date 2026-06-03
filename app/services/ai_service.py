@@ -114,7 +114,8 @@ class AiService:
         if not odoo_context:
             return _SYSTEM_PROMPT
 
-        # Check if we have any business data
+        # Check if Odoo fetch succeeded
+        access_success = odoo_context.get("access_success", False)
         has_invoices = odoo_context.get("invoices")
         has_orders = odoo_context.get("orders")
         has_payments = odoo_context.get("payments")
@@ -125,8 +126,8 @@ class AiService:
             f"You're helping {contact.name if contact else 'a customer'}.\n\n"
         )
 
-        # Only add business data section if we have data
-        if has_any_business_data:
+        # Case 1: Odoo access succeeded and has data
+        if access_success and has_any_business_data:
             if has_invoices:
                 prompt += "Outstanding Invoices:\n"
                 for inv in odoo_context["invoices"][:3]:
@@ -157,14 +158,20 @@ class AiService:
                 "If you need more information, ask politely. "
                 "If unsure, be honest."
             )
-        else:
-            # No business data available - use friendly alternative
+        # Case 2: Odoo access succeeded but no data found
+        elif access_success and not has_any_business_data:
             prompt += (
-                "This customer's business records are not currently accessible in our system, "
-                "so you won't have specific invoice or order details to reference. "
-                "Be helpful and friendly. If they ask about specific orders or invoices, "
-                "politely explain that you can't access those details and suggest they check "
-                "their account directly or contact our support team. Be concise for WhatsApp."
+                "I checked the customer's account and they don't have any invoices, orders, or payments yet. "
+                "Be helpful and friendly. If they ask about ordering or invoicing, let them know they can "
+                "create an order on the website or contact sales. Be concise for WhatsApp."
+            )
+        # Case 3: Odoo access failed
+        else:
+            prompt += (
+                "I'm temporarily unable to access the customer's account details in our system. "
+                "Be helpful and friendly anyway. If they ask about specific orders or invoices, "
+                "explain that you can't retrieve those details right now and suggest they try again "
+                "in a few moments or contact our support team. Be concise for WhatsApp."
             )
 
         return prompt
