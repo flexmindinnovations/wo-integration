@@ -149,6 +149,7 @@ class OdooService:
             ], ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"]),
         ]
 
+        errors_encountered = []
         for model, domain, fields in models_to_try:
             try:
                 invoices = self._execute(
@@ -167,15 +168,17 @@ class OdooService:
                 )
                 return invoices
             except Exception as e:
+                error_msg = str(e)
+                errors_encountered.append(f"{model}: {error_msg}")
                 logger.debug(
                     f"Model {model} not available",
-                    extra={"partner_id": partner_id, "error": str(e)}
+                    extra={"partner_id": partner_id, "error": error_msg}
                 )
                 continue
 
         logger.warning(
-            "Could not fetch invoices — no accounting model accessible",
-            extra={"partner_id": partner_id}
+            "Could not fetch invoices — no accounting model accessible. Check if accounting module is installed and enabled.",
+            extra={"partner_id": partner_id, "models_tried": errors_encountered}
         )
         return []
 
