@@ -147,8 +147,28 @@ def _handle_incoming_message(message: dict, db: Session) -> None:
         db.commit()
         db.refresh(user_msg)
 
-        # Generate AI reply
-        ai_reply = AiService().generate_reply(phone, db)
+        # Fetch contact and Odoo context for AI reply
+        from app.models.contact import Contact
+        contact = db.query(Contact).filter(Contact.phone == phone).first()
+        odoo_context = None
+
+        if contact and contact.odoo_partner_id:
+            try:
+                from app.services.odoo_service import OdooService
+                odoo = OdooService()
+                odoo_context = odoo.fetch_customer_context(contact.odoo_partner_id)
+            except Exception:
+                logger.warning(
+                    "Failed to fetch Odoo context — proceeding with generic reply",
+                    extra={"phone": phone, "partner_id": contact.odoo_partner_id},
+                )
+
+        # Generate AI reply with context
+        ai_reply = AiService().generate_reply_with_context(
+            phone, db,
+            contact=contact,
+            odoo_context=odoo_context
+        )
 
         # Persist assistant message
         assistant_msg = ConversationMessage(

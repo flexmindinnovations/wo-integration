@@ -133,3 +133,100 @@ class OdooService:
             extra={"contacts_created": created, "contacts_updated": updated, "contacts_skipped": skipped},
         )
         return {"created": created, "updated": updated, "skipped": skipped, "total": len(partners)}
+
+    def fetch_customer_invoices(self, partner_id: int, limit: int = 5) -> list[dict]:
+        """Fetch unpaid/open invoices for a customer."""
+        invoices = self._execute(
+            "account.invoice",
+            "search_read",
+            [[
+                ["partner_id", "=", partner_id],
+                ["payment_state", "!=", "paid"]
+            ]],
+            {
+                "fields": ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"],
+                "order": "invoice_date DESC",
+                "limit": limit
+            }
+        )
+        logger.info(
+            "Customer invoices fetched",
+            extra={"partner_id": partner_id, "count": len(invoices)}
+        )
+        return invoices
+
+    def fetch_customer_orders(self, partner_id: int, limit: int = 5) -> list[dict]:
+        """Fetch recent sales orders for a customer."""
+        orders = self._execute(
+            "sale.order",
+            "search_read",
+            [[
+                ["partner_id", "=", partner_id],
+                ["state", "not in", ["draft", "cancel"]]
+            ]],
+            {
+                "fields": ["id", "name", "date_order", "state", "amount_total"],
+                "order": "date_order DESC",
+                "limit": limit
+            }
+        )
+        logger.info(
+            "Customer orders fetched",
+            extra={"partner_id": partner_id, "count": len(orders)}
+        )
+        return orders
+
+    def fetch_customer_payments(self, partner_id: int, limit: int = 3) -> list[dict]:
+        """Fetch recent payments from a customer."""
+        payments = self._execute(
+            "account.payment",
+            "search_read",
+            [[
+                ["partner_id", "=", partner_id],
+                ["state", "=", "posted"]
+            ]],
+            {
+                "fields": ["id", "name", "payment_date", "amount"],
+                "order": "payment_date DESC",
+                "limit": limit
+            }
+        )
+        logger.info(
+            "Customer payments fetched",
+            extra={"partner_id": partner_id, "count": len(payments)}
+        )
+        return payments
+
+    def fetch_customer_context(self, partner_id: int) -> dict:
+        """Fetch complete customer business context for AI replies."""
+        try:
+            partners = self._execute(
+                "res.partner",
+                "search_read",
+                [[["id", "=", partner_id]]],
+                {"fields": ["id", "name", "company_id"]}
+            )
+            partner = partners[0] if partners else {}
+
+            invoices = self.fetch_customer_invoices(partner_id)
+            orders = self.fetch_customer_orders(partner_id)
+            payments = self.fetch_customer_payments(partner_id)
+
+            context = {
+                "partner": partner,
+                "invoices": invoices,
+                "orders": orders,
+                "payments": payments,
+                "company_name": partner.get("name", "")
+            }
+            logger.info(
+                "Customer context fetched",
+                extra={"partner_id": partner_id}
+            )
+            return context
+        except Exception as e:
+            logger.error(
+                "Error fetching customer context",
+                extra={"partner_id": partner_id, "error": str(e)}
+            )
+            raise
