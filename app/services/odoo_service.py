@@ -136,31 +136,48 @@ class OdooService:
 
     def fetch_customer_invoices(self, partner_id: int, limit: int = 5) -> list[dict]:
         """Fetch unpaid/open invoices for a customer. Returns empty list if model unavailable."""
-        try:
-            invoices = self._execute(
-                "account.invoice",
-                "search_read",
-                [[
-                    ["partner_id", "=", partner_id],
-                    ["payment_state", "!=", "paid"]
-                ]],
-                {
-                    "fields": ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"],
-                    "order": "invoice_date DESC",
-                    "limit": limit
-                }
-            )
-            logger.info(
-                "Customer invoices fetched",
-                extra={"partner_id": partner_id, "count": len(invoices)}
-            )
-            return invoices
-        except Exception as e:
-            logger.warning(
-                "Could not fetch invoices — model may not exist or not accessible",
-                extra={"partner_id": partner_id, "error": str(e)}
-            )
-            return []
+        # Try Odoo 13+ model first (account.move), fallback to legacy (account.invoice)
+        models_to_try = [
+            ("account.move", [
+                ["partner_id", "=", partner_id],
+                ["move_type", "in", ["out_invoice", "out_refund"]],
+                ["payment_state", "!=", "paid"]
+            ], ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"]),
+            ("account.invoice", [
+                ["partner_id", "=", partner_id],
+                ["payment_state", "!=", "paid"]
+            ], ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"]),
+        ]
+
+        for model, domain, fields in models_to_try:
+            try:
+                invoices = self._execute(
+                    model,
+                    "search_read",
+                    [domain],
+                    {
+                        "fields": fields,
+                        "order": "invoice_date DESC",
+                        "limit": limit
+                    }
+                )
+                logger.info(
+                    "Customer invoices fetched",
+                    extra={"partner_id": partner_id, "count": len(invoices), "model": model}
+                )
+                return invoices
+            except Exception as e:
+                logger.debug(
+                    f"Model {model} not available",
+                    extra={"partner_id": partner_id, "error": str(e)}
+                )
+                continue
+
+        logger.warning(
+            "Could not fetch invoices — no accounting model accessible",
+            extra={"partner_id": partner_id}
+        )
+        return []
 
     def fetch_customer_orders(self, partner_id: int, limit: int = 5) -> list[dict]:
         """Fetch recent sales orders for a customer. Returns empty list if model unavailable."""
