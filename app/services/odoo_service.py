@@ -135,70 +135,91 @@ class OdooService:
         return {"created": created, "updated": updated, "skipped": skipped, "total": len(partners)}
 
     def fetch_customer_invoices(self, partner_id: int, limit: int = 5) -> list[dict]:
-        """Fetch unpaid/open invoices for a customer."""
-        invoices = self._execute(
-            "account.invoice",
-            "search_read",
-            [[
-                ["partner_id", "=", partner_id],
-                ["payment_state", "!=", "paid"]
-            ]],
-            {
-                "fields": ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"],
-                "order": "invoice_date DESC",
-                "limit": limit
-            }
-        )
-        logger.info(
-            "Customer invoices fetched",
-            extra={"partner_id": partner_id, "count": len(invoices)}
-        )
-        return invoices
+        """Fetch unpaid/open invoices for a customer. Returns empty list if model unavailable."""
+        try:
+            invoices = self._execute(
+                "account.invoice",
+                "search_read",
+                [[
+                    ["partner_id", "=", partner_id],
+                    ["payment_state", "!=", "paid"]
+                ]],
+                {
+                    "fields": ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"],
+                    "order": "invoice_date DESC",
+                    "limit": limit
+                }
+            )
+            logger.info(
+                "Customer invoices fetched",
+                extra={"partner_id": partner_id, "count": len(invoices)}
+            )
+            return invoices
+        except Exception as e:
+            logger.warning(
+                "Could not fetch invoices — model may not exist or not accessible",
+                extra={"partner_id": partner_id, "error": str(e)}
+            )
+            return []
 
     def fetch_customer_orders(self, partner_id: int, limit: int = 5) -> list[dict]:
-        """Fetch recent sales orders for a customer."""
-        orders = self._execute(
-            "sale.order",
-            "search_read",
-            [[
-                ["partner_id", "=", partner_id],
-                ["state", "not in", ["draft", "cancel"]]
-            ]],
-            {
-                "fields": ["id", "name", "date_order", "state", "amount_total"],
-                "order": "date_order DESC",
-                "limit": limit
-            }
-        )
-        logger.info(
-            "Customer orders fetched",
-            extra={"partner_id": partner_id, "count": len(orders)}
-        )
-        return orders
+        """Fetch recent sales orders for a customer. Returns empty list if model unavailable."""
+        try:
+            orders = self._execute(
+                "sale.order",
+                "search_read",
+                [[
+                    ["partner_id", "=", partner_id],
+                    ["state", "not in", ["draft", "cancel"]]
+                ]],
+                {
+                    "fields": ["id", "name", "date_order", "state", "amount_total"],
+                    "order": "date_order DESC",
+                    "limit": limit
+                }
+            )
+            logger.info(
+                "Customer orders fetched",
+                extra={"partner_id": partner_id, "count": len(orders)}
+            )
+            return orders
+        except Exception as e:
+            logger.warning(
+                "Could not fetch orders — model may not exist or not accessible",
+                extra={"partner_id": partner_id, "error": str(e)}
+            )
+            return []
 
     def fetch_customer_payments(self, partner_id: int, limit: int = 3) -> list[dict]:
-        """Fetch recent payments from a customer."""
-        payments = self._execute(
-            "account.payment",
-            "search_read",
-            [[
-                ["partner_id", "=", partner_id],
-                ["state", "=", "posted"]
-            ]],
-            {
-                "fields": ["id", "name", "payment_date", "amount"],
-                "order": "payment_date DESC",
-                "limit": limit
-            }
-        )
-        logger.info(
-            "Customer payments fetched",
-            extra={"partner_id": partner_id, "count": len(payments)}
-        )
-        return payments
+        """Fetch recent payments from a customer. Returns empty list if model unavailable."""
+        try:
+            payments = self._execute(
+                "account.payment",
+                "search_read",
+                [[
+                    ["partner_id", "=", partner_id],
+                    ["state", "=", "posted"]
+                ]],
+                {
+                    "fields": ["id", "name", "payment_date", "amount"],
+                    "order": "payment_date DESC",
+                    "limit": limit
+                }
+            )
+            logger.info(
+                "Customer payments fetched",
+                extra={"partner_id": partner_id, "count": len(payments)}
+            )
+            return payments
+        except Exception as e:
+            logger.warning(
+                "Could not fetch payments — model may not exist or not accessible",
+                extra={"partner_id": partner_id, "error": str(e)}
+            )
+            return []
 
     def fetch_customer_context(self, partner_id: int) -> dict:
-        """Fetch complete customer business context for AI replies."""
+        """Fetch complete customer business context for AI replies. Gracefully handles missing models."""
         try:
             partners = self._execute(
                 "res.partner",
@@ -208,6 +229,7 @@ class OdooService:
             )
             partner = partners[0] if partners else {}
 
+            # Fetch each data type independently - if one fails, continue with others
             invoices = self.fetch_customer_invoices(partner_id)
             orders = self.fetch_customer_orders(partner_id)
             payments = self.fetch_customer_payments(partner_id)
@@ -219,9 +241,11 @@ class OdooService:
                 "payments": payments,
                 "company_name": partner.get("name", "")
             }
+
+            has_data = bool(invoices or orders or payments)
             logger.info(
                 "Customer context fetched",
-                extra={"partner_id": partner_id}
+                extra={"partner_id": partner_id, "has_business_data": has_data}
             )
             return context
         except Exception as e:
@@ -229,4 +253,11 @@ class OdooService:
                 "Error fetching customer context",
                 extra={"partner_id": partner_id, "error": str(e)}
             )
-            raise
+            # Return partner info only, even if models failed
+            return {
+                "partner": {},
+                "invoices": [],
+                "orders": [],
+                "payments": [],
+                "company_name": ""
+            }

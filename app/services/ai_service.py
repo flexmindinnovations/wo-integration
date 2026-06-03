@@ -114,40 +114,57 @@ class AiService:
         if not odoo_context:
             return _SYSTEM_PROMPT
 
+        # Check if we have any business data
+        has_invoices = odoo_context.get("invoices")
+        has_orders = odoo_context.get("orders")
+        has_payments = odoo_context.get("payments")
+        has_any_business_data = has_invoices or has_orders or has_payments
+
         prompt = (
             f"You are a helpful customer service assistant for Flexmind Innovations. "
             f"You're helping {contact.name if contact else 'a customer'}.\n\n"
         )
 
-        if odoo_context.get("invoices"):
-            prompt += "Outstanding Invoices:\n"
-            for inv in odoo_context["invoices"][:3]:
-                due = inv.get("due_date", "N/A")
-                amount = inv.get("amount_total", 0)
-                state = inv.get("payment_state", "unknown")
-                prompt += f"  • {inv['name']}: ₹{amount:.2f} (Due: {due}, Status: {state})\n"
-            prompt += "\n"
+        # Only add business data section if we have data
+        if has_any_business_data:
+            if has_invoices:
+                prompt += "Outstanding Invoices:\n"
+                for inv in odoo_context["invoices"][:3]:
+                    due = inv.get("due_date", "N/A")
+                    amount = inv.get("amount_total", 0)
+                    state = inv.get("payment_state", "unknown")
+                    prompt += f"  • {inv['name']}: ₹{amount:.2f} (Due: {due}, Status: {state})\n"
+                prompt += "\n"
 
-        if odoo_context.get("orders"):
-            prompt += "Recent Orders:\n"
-            for order in odoo_context["orders"][:3]:
-                state = order.get("state", "unknown")
-                amount = order.get("amount_total", 0)
-                date = order.get("date_order", "N/A")
-                prompt += f"  • {order['name']}: ₹{amount:.2f} ({state}, {date})\n"
-            prompt += "\n"
+            if has_orders:
+                prompt += "Recent Orders:\n"
+                for order in odoo_context["orders"][:3]:
+                    state = order.get("state", "unknown")
+                    amount = order.get("amount_total", 0)
+                    date = order.get("date_order", "N/A")
+                    prompt += f"  • {order['name']}: ₹{amount:.2f} ({state}, {date})\n"
+                prompt += "\n"
 
-        if odoo_context.get("payments"):
-            payment = odoo_context["payments"][0] if odoo_context["payments"] else None
-            if payment:
-                prompt += f"Last Payment: {payment['payment_date']} (₹{payment.get('amount', 0):.2f})\n\n"
+            if has_payments:
+                payment = odoo_context["payments"][0] if odoo_context["payments"] else None
+                if payment:
+                    prompt += f"Last Payment: {payment['payment_date']} (₹{payment.get('amount', 0):.2f})\n\n"
 
-        prompt += (
-            "Use this account information to provide personalized, helpful responses. "
-            "Be concise for WhatsApp (short paragraphs). "
-            "Offer solutions based on their account status. "
-            "If you need more information, ask politely. "
-            "If unsure, be honest."
-        )
+            prompt += (
+                "Use this account information to provide personalized, helpful responses. "
+                "Be concise for WhatsApp (short paragraphs). "
+                "Offer solutions based on their account status. "
+                "If you need more information, ask politely. "
+                "If unsure, be honest."
+            )
+        else:
+            # No business data available - use friendly alternative
+            prompt += (
+                "This customer's business records are not currently accessible in our system, "
+                "so you won't have specific invoice or order details to reference. "
+                "Be helpful and friendly. If they ask about specific orders or invoices, "
+                "politely explain that you can't access those details and suggest they check "
+                "their account directly or contact our support team. Be concise for WhatsApp."
+            )
 
         return prompt
