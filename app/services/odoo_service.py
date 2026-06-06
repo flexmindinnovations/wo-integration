@@ -3,12 +3,25 @@ import xmlrpc.client
 import requests
 import base64
 from datetime import datetime
+from io import BytesIO
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.contact import Contact
 
 logger = logging.getLogger(__name__)
+
+# Try to import reportlab for PDF generation fallback
+try:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
+    logger.warning("reportlab not installed - PDF generation fallback will not be available")
 
 
 def _normalize_phone(raw: str) -> str:
@@ -329,34 +342,61 @@ class OdooService:
                         extra={"invoice_id": invoice_id, "report_name": report_name}
                     )
 
-                    # Get the report action by name
-                    report = self._execute(
-                        "ir.actions.report",
-                        "search_read",
-                        [[["report_name", "=", report_name]]],
-                        {"fields": ["id", "name", "report_name"]}
-                    )
+                    try:
+                        # Get the report action by name
+                        report = self._execute(
+                            "ir.actions.report",
+                            "search_read",
+                            [[["report_name", "=", report_name]]],
+                            {"fields": ["id", "name", "report_name"]}
+                        )
 
-                    logger.info(
-                        f"Report search result",
-                        extra={"invoice_id": invoice_id, "report_name": report_name, "found": bool(report), "count": len(report) if report else 0}
-                    )
+                        logger.info(
+                            f"Report search result",
+                            extra={"invoice_id": invoice_id, "report_name": report_name, "found": bool(report), "count": len(report) if report else 0}
+                        )
+                    except Exception as search_error:
+                        logger.error(
+                            f"Report search failed",
+                            extra={"invoice_id": invoice_id, "report_name": report_name, "error": str(search_error)}
+                        )
+
+                        # Try to list all available reports for debugging
+                        try:
+                            logger.info("Attempting to list all available reports")
+                            all_reports = self._execute(
+                                "ir.actions.report",
+                                "search_read",
+                                [[]],
+                                {"fields": ["id", "name", "report_name"], "limit": 20}
+                            )
+                            report_names = [r.get("report_name") for r in all_reports]
+                            logger.info(
+                                "All available reports",
+                                extra={"invoice_id": invoice_id, "available_reports": report_names}
+                            )
+                        except Exception as list_error:
+                            logger.error(f"Could not list reports: {str(list_error)}")
+
+                        continue
 
                     if not report:
                         # Try to list all available reports for debugging
                         try:
+                            logger.info("No reports found for that name, listing invoice-related reports")
                             all_reports = self._execute(
                                 "ir.actions.report",
                                 "search_read",
                                 [[["report_name", "like", "invoice"]]],
                                 {"fields": ["id", "name", "report_name"]}
                             )
+                            report_names = [r.get("report_name") for r in all_reports]
                             logger.info(
                                 "Available invoice-related reports",
-                                extra={"invoice_id": invoice_id, "available_reports": [r.get("report_name") for r in all_reports]}
+                                extra={"invoice_id": invoice_id, "available_reports": report_names}
                             )
                         except Exception as e:
-                            logger.debug(f"Could not fetch available reports: {str(e)}")
+                            logger.error(f"Could not fetch available reports: {str(e)}")
 
                         continue
 
@@ -366,18 +406,25 @@ class OdooService:
                         extra={"invoice_id": invoice_id, "report_id": report_id, "report_name": report_name}
                     )
 
-                    # Render the report to PDF
-                    pdf_content = self._execute(
-                        "ir.actions.report",
-                        "render_qweb_pdf",
-                        [report_id, [invoice_id]],
-                        {}
-                    )
+                    try:
+                        # Render the report to PDF
+                        pdf_content = self._execute(
+                            "ir.actions.report",
+                            "render_qweb_pdf",
+                            [report_id, [invoice_id]],
+                            {}
+                        )
 
-                    logger.info(
-                        f"PDF render result",
-                        extra={"invoice_id": invoice_id, "report_name": report_name, "has_content": bool(pdf_content), "type": type(pdf_content).__name__}
-                    )
+                        logger.info(
+                            f"PDF render result",
+                            extra={"invoice_id": invoice_id, "report_name": report_name, "has_content": bool(pdf_content), "type": type(pdf_content).__name__}
+                        )
+                    except Exception as render_error:
+                        logger.error(
+                            f"PDF render failed",
+                            extra={"invoice_id": invoice_id, "report_name": report_name, "error": str(render_error)}
+                        )
+                        continue
 
                     if pdf_content:
                         # render_qweb_pdf returns [pdf_bytes, mime_type] or similar
@@ -440,15 +487,123 @@ class OdooService:
                     )
                     return response.content
 
+            logger.warning(
+                "Failed to fetch PDF from Odoo, will try PDF generation fallback",
+                extra={"invoice_id": invoice_id}
+            )
             raise ValueError(
                 f"Could not fetch valid PDF for invoice {invoice_id}. "
-                "Tried account.report_invoice and HTTP endpoint. "
-                "Ensure the accounting module is enabled and invoice exists."
+                "Tried account.report_invoice and HTTP endpoint."
             )
 
         except Exception as e:
             logger.error(
-                "Failed to fetch invoice PDF",
+                "Failed to fetch invoice PDF from Odoo",
                 extra={"invoice_id": invoice_id, "error": str(e)}
+            )
+            raise
+
+    def generate_invoice_pdf(self, invoice_data: dict) -> bytes:
+        """
+        Generate a PDF from invoice data as a fallback when Odoo PDF fetch fails.
+
+        Args:
+            invoice_data: Dictionary with keys: name, amount_total, invoice_date, payment_state, due_date (optional)
+
+        Returns:
+            PDF bytes that can be uploaded to WhatsApp
+        """
+        if not REPORTLAB_AVAILABLE:
+            raise ImportError("reportlab is not installed - PDF generation not available")
+
+        try:
+            from reportlab.lib.pagesizes import letter
+            from reportlab.lib import colors
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import inch
+            from reportlab.lib.enums import TA_CENTER
+
+            logger.info(
+                "Generating invoice PDF from data",
+                extra={"invoice_name": invoice_data.get("name")}
+            )
+
+            # Create PDF in memory
+            pdf_buffer = BytesIO()
+            doc = SimpleDocTemplate(pdf_buffer, pagesize=letter)
+            styles = getSampleStyleSheet()
+            elements = []
+
+            # Title
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Heading1'],
+                fontSize=24,
+                textColor=colors.HexColor('#1f4788'),
+                spaceAfter=30,
+                alignment=TA_CENTER
+            )
+            elements.append(Paragraph("INVOICE", title_style))
+            elements.append(Spacer(1, 0.3 * inch))
+
+            # Invoice details
+            invoice_number = invoice_data.get("name", "N/A")
+            invoice_date = invoice_data.get("invoice_date", "N/A")
+            due_date = invoice_data.get("due_date", invoice_data.get("invoice_date", "N/A"))
+            amount = invoice_data.get("amount_total", 0)
+            payment_state = invoice_data.get("payment_state", "unknown").replace("_", " ").title()
+
+            # Details table
+            details_data = [
+                ["Invoice Number:", invoice_number],
+                ["Invoice Date:", str(invoice_date)],
+                ["Due Date:", str(due_date)],
+                ["Amount:", f"₹{amount:,.2f}"],
+                ["Status:", payment_state],
+            ]
+
+            details_table = Table(details_data, colWidths=[2 * inch, 4 * inch])
+            details_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f0f0f0')),
+                ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 11),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+                ('TOPPADDING', (0, 0), (-1, -1), 12),
+                ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+            ]))
+
+            elements.append(details_table)
+            elements.append(Spacer(1, 0.5 * inch))
+
+            # Footer
+            footer_style = ParagraphStyle(
+                'Footer',
+                parent=styles['Normal'],
+                fontSize=9,
+                textColor=colors.grey,
+                alignment=TA_CENTER
+            )
+            elements.append(Paragraph(
+                "This is a summary invoice generated from your account.<br/>For official invoices, please log into your Flexmind Innovations account portal.",
+                footer_style
+            ))
+
+            # Build PDF
+            doc.build(elements)
+            pdf_bytes = pdf_buffer.getvalue()
+
+            logger.info(
+                "Invoice PDF generated successfully",
+                extra={"invoice_name": invoice_number, "size": len(pdf_bytes)}
+            )
+            return pdf_bytes
+
+        except Exception as e:
+            logger.error(
+                "Failed to generate invoice PDF",
+                extra={"invoice_name": invoice_data.get("name"), "error": str(e)}
             )
             raise

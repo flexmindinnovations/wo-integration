@@ -66,7 +66,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
 def _send_invoice_pdfs(phone: str, invoices: list[dict], db: Session) -> None:
     """
     Send invoice PDFs to the user.
-    Attempts to fetch and send PDF for each invoice.
+    Attempts to fetch from Odoo first, then falls back to generated PDF.
     """
     try:
         from app.services.odoo_service import OdooService
@@ -87,12 +87,44 @@ def _send_invoice_pdfs(phone: str, invoices: list[dict], db: Session) -> None:
                     extra={"phone": phone, "invoice_id": invoice_id, "invoice_name": invoice_name}
                 )
 
-                # Fetch PDF from Odoo
-                pdf_bytes = odoo.get_invoice_pdf(invoice_id)
-                logger.info(
-                    "Invoice PDF fetched successfully",
-                    extra={"phone": phone, "invoice_id": invoice_id, "pdf_size": len(pdf_bytes)}
-                )
+                pdf_bytes = None
+                pdf_source = None
+
+                # Try to fetch PDF from Odoo first
+                try:
+                    pdf_bytes = odoo.get_invoice_pdf(invoice_id)
+                    pdf_source = "odoo"
+                    logger.info(
+                        "Invoice PDF fetched from Odoo",
+                        extra={"phone": phone, "invoice_id": invoice_id, "pdf_size": len(pdf_bytes)}
+                    )
+                except Exception as odoo_error:
+                    logger.warning(
+                        "Failed to fetch from Odoo, trying PDF generation fallback",
+                        extra={"phone": phone, "invoice_id": invoice_id, "error": str(odoo_error)}
+                    )
+
+                    # Fallback: Generate PDF from invoice data
+                    try:
+                        pdf_bytes = odoo.generate_invoice_pdf(inv)
+                        pdf_source = "generated"
+                        logger.info(
+                            "Invoice PDF generated as fallback",
+                            extra={"phone": phone, "invoice_id": invoice_id, "pdf_size": len(pdf_bytes)}
+                        )
+                    except Exception as gen_error:
+                        logger.error(
+                            "Failed to generate PDF fallback",
+                            extra={"phone": phone, "invoice_id": invoice_id, "error": str(gen_error)}
+                        )
+                        continue
+
+                if not pdf_bytes:
+                    logger.warning(
+                        "No PDF bytes available",
+                        extra={"phone": phone, "invoice_id": invoice_id}
+                    )
+                    continue
 
                 # Upload to Meta and get media ID
                 upload_filename = f"{invoice_name}.pdf"
@@ -103,14 +135,14 @@ def _send_invoice_pdfs(phone: str, invoices: list[dict], db: Session) -> None:
                 )
                 logger.info(
                     "Invoice PDF uploaded to Meta",
-                    extra={"phone": phone, "invoice_id": invoice_id, "media_id": media_id}
+                    extra={"phone": phone, "invoice_id": invoice_id, "media_id": media_id, "source": pdf_source}
                 )
 
                 # Send the document using media ID with proper filename
                 whatsapp.send_document_by_id(phone, media_id, invoice_name)
                 logger.info(
                     "Invoice PDF sent successfully",
-                    extra={"phone": phone, "invoice_id": invoice_id, "invoice_name": invoice_name}
+                    extra={"phone": phone, "invoice_id": invoice_id, "invoice_name": invoice_name, "source": pdf_source}
                 )
                 sent_count += 1
 
