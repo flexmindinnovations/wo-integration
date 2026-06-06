@@ -301,122 +301,119 @@ class OdooService:
 
     def get_invoice_pdf(self, invoice_id: int) -> bytes:
         """
-        Fetch invoice PDF from Odoo.
+        Fetch invoice PDF from Odoo using the Odoo 19 API.
         Returns PDF bytes that can be uploaded to WhatsApp.
 
-        Tries multiple methods:
-        1. RPC report_download via account.move/account.invoice
-        2. HTTP report endpoint with API key authentication
-        3. Alternative Odoo report API endpoints
+        Uses ir.actions.report._get_report_from_name() and render_qweb_pdf()
+        which is the recommended Odoo 19 approach.
         """
         try:
-            # Method 1: Try RPC report_download (most reliable)
-            models_to_try = ["account.move", "account.invoice"]
+            # Odoo 19 API: Get the invoice report and render it to PDF
+            # This uses the built-in account.report_invoice report
 
-            for model in models_to_try:
+            logger.info(
+                "Fetching invoice PDF using Odoo 19 API",
+                extra={"invoice_id": invoice_id}
+            )
+
+            # Method 1: Try to get and render the standard invoice report
+            report_names_to_try = [
+                "account.report_invoice",
+                "account.invoice_report",
+            ]
+
+            for report_name in report_names_to_try:
                 try:
-                    pdf_content = self._execute(
-                        model,
-                        "report_download",
-                        [invoice_id],
-                        {"report_type": "pdf"}
+                    # Get the report action by name
+                    report = self._execute(
+                        "ir.actions.report",
+                        "search_read",
+                        [[["report_name", "=", report_name]]],
+                        {"fields": ["id"]}
                     )
 
-                    if pdf_content:
-                        logger.info(
-                            "Invoice PDF fetched via RPC",
-                            extra={"invoice_id": invoice_id, "model": model}
-                        )
-                        # Handle both base64 string and bytes
-                        if isinstance(pdf_content, str):
-                            return base64.b64decode(pdf_content)
-                        elif isinstance(pdf_content, bytes):
-                            return pdf_content
-                        elif isinstance(pdf_content, list):
-                            # Sometimes Odoo returns [filename, base64_content]
-                            return base64.b64decode(pdf_content[1]) if len(pdf_content) > 1 else b""
-
-                except Exception as e:
-                    logger.debug(
-                        f"RPC report_download failed for {model}",
-                        extra={"invoice_id": invoice_id, "error": str(e)}
-                    )
-                    continue
-
-            # Method 2: Try HTTP report endpoint with API key in header
-            password = settings.ODOO_PASSWORD or settings.ODOO_API_KEY or ""
-            for report_model in ["account.move", "account.invoice"]:
-                try:
-                    report_url = f"{settings.ODOO_URL}/report/pdf/{report_model}/{invoice_id}"
-                    headers: dict[str, str] = {}
-                    if settings.ODOO_API_KEY:
-                        headers["Authorization"] = f"Bearer {settings.ODOO_API_KEY}"
-
-                    response = requests.get(
-                        report_url,
-                        auth=(settings.ODOO_USERNAME, password) if password else None,
-                        headers=headers if headers else None,
-                        timeout=30,
-                        verify=True
-                    )
-
-                    # Check if we got HTML (error page) instead of PDF
-                    if response.content.startswith(b"<!DOCTYPE") or response.content.startswith(b"<html"):
+                    if not report:
                         logger.debug(
-                            f"Got HTML response from {report_model} endpoint (auth may have failed)",
-                            extra={"invoice_id": invoice_id, "status": response.status_code}
+                            f"Report {report_name} not found",
+                            extra={"invoice_id": invoice_id}
                         )
                         continue
 
-                    response.raise_for_status()
+                    report_id = report[0]["id"]
 
-                    # Verify it's a valid PDF
-                    if response.content.startswith(b"%PDF"):
+                    # Render the report to PDF
+                    pdf_content = self._execute(
+                        "ir.actions.report",
+                        "render_qweb_pdf",
+                        [report_id, [invoice_id]],
+                        {}
+                    )
+
+                    if pdf_content:
+                        # render_qweb_pdf returns [pdf_bytes, mime_type] or similar
+                        if isinstance(pdf_content, list) and len(pdf_content) > 0:
+                            pdf_data = pdf_content[0]
+                        else:
+                            pdf_data = pdf_content
+
+                        # Handle base64 encoding if needed
+                        if isinstance(pdf_data, str):
+                            pdf_bytes = base64.b64decode(pdf_data)
+                        elif isinstance(pdf_data, bytes):
+                            pdf_bytes = pdf_data
+                        else:
+                            # If it's not bytes or string, try to convert
+                            pdf_bytes = bytes(pdf_data) if pdf_data else b""
+
                         logger.info(
-                            "Invoice PDF fetched via HTTP report endpoint",
-                            extra={"invoice_id": invoice_id, "model": report_model, "size": len(response.content)}
+                            "Invoice PDF fetched via Odoo 19 API",
+                            extra={"invoice_id": invoice_id, "report": report_name, "size": len(pdf_bytes)}
                         )
-                        return response.content
-                    else:
-                        logger.warning(
-                            "Invalid PDF content from report endpoint",
-                            extra={"invoice_id": invoice_id, "model": report_model, "first_bytes": str(response.content[:20])}
-                        )
+                        return pdf_bytes
+
                 except Exception as e:
                     logger.debug(
-                        f"HTTP report endpoint failed for {report_model}",
+                        f"Failed to fetch PDF using report {report_name}",
                         extra={"invoice_id": invoice_id, "error": str(e)}
                     )
                     continue
 
-            # Method 3: Try alternative Odoo report names for invoices
-            alternative_reports = [
-                "account.report_invoice",
-                "account.invoice_report",
-                "account.move_report",
-            ]
-            for report_name in alternative_reports:
-                try:
-                    report_url = f"{settings.ODOO_URL}/report/pdf/{report_name}/{invoice_id}"
-                    response = requests.get(
-                        report_url,
-                        auth=(settings.ODOO_USERNAME, password) if password else None,
-                        timeout=30,
-                        verify=True
-                    )
+            # Method 2: Fallback - Try HTTP report endpoint
+            logger.info(
+                "Trying fallback HTTP report endpoint",
+                extra={"invoice_id": invoice_id}
+            )
+            password = settings.ODOO_PASSWORD or settings.ODOO_API_KEY or ""
+            report_url = f"{settings.ODOO_URL}/report/pdf/account.report_invoice/{invoice_id}"
 
-                    if response.content.startswith(b"%PDF"):
-                        logger.info(
-                            "Invoice PDF fetched via alternative report",
-                            extra={"invoice_id": invoice_id, "report": report_name, "size": len(response.content)}
-                        )
-                        return response.content
-                except Exception:
-                    continue
+            response = requests.get(
+                report_url,
+                auth=(settings.ODOO_USERNAME, password) if password else None,
+                timeout=30,
+                verify=True
+            )
+
+            # Check if we got HTML (error page) instead of PDF
+            if response.content.startswith(b"<!DOCTYPE") or response.content.startswith(b"<html"):
+                logger.debug(
+                    "Got HTML response from report endpoint (likely auth failure)",
+                    extra={"invoice_id": invoice_id, "status": response.status_code}
+                )
+            else:
+                response.raise_for_status()
+
+                # Verify it's a valid PDF
+                if response.content.startswith(b"%PDF"):
+                    logger.info(
+                        "Invoice PDF fetched via HTTP report endpoint",
+                        extra={"invoice_id": invoice_id, "size": len(response.content)}
+                    )
+                    return response.content
 
             raise ValueError(
-                f"Could not fetch valid PDF from any Odoo endpoint for invoice {invoice_id}. "
-                "Check that the invoice exists and the accounting module is enabled."
+                f"Could not fetch valid PDF for invoice {invoice_id}. "
+                "Tried account.report_invoice and HTTP endpoint. "
+                "Ensure the accounting module is enabled and invoice exists."
             )
 
         except Exception as e:
