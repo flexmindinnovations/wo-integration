@@ -12,6 +12,7 @@ class WhatsAppService:
         self._phone_number_id = settings.WHATSAPP_PHONE_NUMBER_ID
         self._token = settings.WHATSAPP_TOKEN
         self._url = f"{_GRAPH_API_BASE}/{self._phone_number_id}/messages"
+        self._media_url = f"{_GRAPH_API_BASE}/{self._phone_number_id}/media"
         self._headers = {
             "Authorization": f"Bearer {self._token}",
             "Content-Type": "application/json",
@@ -63,4 +64,96 @@ class WhatsAppService:
         }
         response = requests.post(self._url, headers=self._headers, json=payload, timeout=30)
         response.raise_for_status()
+        return response.json()
+
+    def upload_media(self, file_bytes: bytes, filename: str, mimetype: str = "application/pdf") -> str:
+        """
+        Upload a file to Meta and return the media ID.
+
+        Args:
+            file_bytes: File content as bytes
+            filename: Filename for the upload
+            mimetype: MIME type (default: application/pdf)
+
+        Returns:
+            Media ID from Meta's API
+        """
+        files = {
+            "file": (filename, file_bytes, mimetype),
+        }
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+        }
+
+        response = requests.post(
+            self._media_url,
+            files=files,
+            headers=headers,
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+        media_id = data.get("id")
+        logger.info(
+            "Media uploaded to Meta",
+            extra={"filename": filename, "media_id": media_id}
+        )
+        return media_id
+
+    def send_document_by_id(self, phone: str, media_id: str, filename: str | None = None) -> dict:
+        """
+        Send a document/file to user using uploaded media ID.
+
+        Args:
+            phone: WhatsApp phone number
+            media_id: Media ID from upload_media()
+            filename: Optional filename to display
+        """
+        phone = "".join(ch for ch in phone if ch.isdigit())
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": phone,
+            "type": "document",
+            "document": {
+                "id": media_id,
+            },
+        }
+        if filename:
+            payload["document"]["caption"] = filename
+
+        response = requests.post(self._url, headers=self._headers, json=payload, timeout=30)
+        response.raise_for_status()
+        logger.info(
+            "WhatsApp document sent",
+            extra={"phone": phone, "filename": filename, "media_id": media_id},
+        )
+        return response.json()
+
+    def send_document(self, phone: str, file_url: str, filename: str | None = None) -> dict:
+        """
+        Send a document/file to user via URL.
+
+        Args:
+            phone: WhatsApp phone number
+            file_url: URL to the file (public URL)
+            filename: Optional filename to display (e.g., "invoice.pdf")
+        """
+        phone = "".join(ch for ch in phone if ch.isdigit())
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": phone,
+            "type": "document",
+            "document": {
+                "link": file_url,
+            },
+        }
+        if filename:
+            payload["document"]["caption"] = filename
+
+        response = requests.post(self._url, headers=self._headers, json=payload, timeout=30)
+        response.raise_for_status()
+        logger.info(
+            "WhatsApp document sent via URL",
+            extra={"phone": phone, "filename": filename},
+        )
         return response.json()

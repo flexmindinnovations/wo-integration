@@ -1,5 +1,7 @@
 import logging
 import xmlrpc.client
+import requests
+import base64
 from datetime import datetime
 from sqlalchemy.orm import Session
 
@@ -296,3 +298,65 @@ class OdooService:
                 "company_name": "",
                 "access_success": False  # Odoo fetch failed
             }
+
+    def get_invoice_pdf(self, invoice_id: int) -> bytes:
+        """
+        Fetch invoice PDF from Odoo.
+        Returns PDF bytes that can be uploaded to WhatsApp.
+        """
+        try:
+            # Try account.move model first (Odoo 13+)
+            models_to_try = ["account.move", "account.invoice"]
+
+            for model in models_to_try:
+                try:
+                    # Get the report URL
+                    pdf_content = self._execute(
+                        model,
+                        "report_download",
+                        [invoice_id],
+                        {"report_type": "pdf"}
+                    )
+
+                    if pdf_content:
+                        logger.info(
+                            "Invoice PDF fetched",
+                            extra={"invoice_id": invoice_id, "model": model}
+                        )
+                        # Handle both base64 string and bytes
+                        if isinstance(pdf_content, str):
+                            return base64.b64decode(pdf_content)
+                        elif isinstance(pdf_content, bytes):
+                            return pdf_content
+                        elif isinstance(pdf_content, list):
+                            # Sometimes Odoo returns [filename, base64_content]
+                            return base64.b64decode(pdf_content[1]) if len(pdf_content) > 1 else b""
+
+                except Exception as e:
+                    logger.debug(
+                        f"Could not fetch PDF from {model}",
+                        extra={"invoice_id": invoice_id, "error": str(e)}
+                    )
+                    continue
+
+            # Fallback: use report API endpoint
+            password = settings.ODOO_PASSWORD or settings.ODOO_API_KEY or ""
+            report_url = f"{settings.ODOO_URL}/report/pdf/account.invoice/{invoice_id}"
+            response = requests.get(
+                report_url,
+                auth=(settings.ODOO_USERNAME, password) if password else None,
+                timeout=30
+            )
+            response.raise_for_status()
+            logger.info(
+                "Invoice PDF fetched via report endpoint",
+                extra={"invoice_id": invoice_id}
+            )
+            return response.content
+
+        except Exception as e:
+            logger.error(
+                "Failed to fetch invoice PDF",
+                extra={"invoice_id": invoice_id, "error": str(e)}
+            )
+            raise

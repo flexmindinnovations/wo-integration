@@ -63,6 +63,63 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
     return {"status": "ok"}
 
 
+def _send_invoice_pdfs(phone: str, invoices: list[dict], db: Session) -> None:
+    """
+    Send invoice PDFs to the user.
+    Attempts to fetch and send PDF for each invoice.
+    """
+    try:
+        from app.services.odoo_service import OdooService
+
+        odoo = OdooService()
+        whatsapp = WhatsAppService()
+
+        sent_count = 0
+        for inv in invoices[:3]:  # Limit to 3 PDFs to avoid spam
+            try:
+                invoice_id = inv.get("id")
+                invoice_name = inv.get("name", "Invoice")
+                if not invoice_id:
+                    continue
+
+                # Fetch PDF from Odoo
+                pdf_bytes = odoo.get_invoice_pdf(invoice_id)
+
+                # Upload to Meta and get media ID
+                media_id = whatsapp.upload_media(
+                    pdf_bytes,
+                    f"{invoice_name}.pdf",
+                    "application/pdf"
+                )
+
+                # Send the document using media ID
+                whatsapp.send_document_by_id(phone, media_id, f"{invoice_name}")
+                logger.info(
+                    "Invoice PDF sent successfully",
+                    extra={"phone": phone, "invoice_id": invoice_id, "invoice_name": invoice_name}
+                )
+                sent_count += 1
+
+            except Exception as e:
+                logger.warning(
+                    "Failed to send invoice PDF",
+                    extra={"phone": phone, "invoice_id": inv.get("id"), "error": str(e)}
+                )
+                continue
+
+        if sent_count > 0:
+            logger.info(
+                "Invoice PDFs sent",
+                extra={"phone": phone, "sent_count": sent_count}
+            )
+
+    except Exception as e:
+        logger.exception(
+            "Error in invoice PDF handler",
+            extra={"phone": phone, "error": str(e)}
+        )
+
+
 def _process_status_update(event: dict, db: Session) -> None:
     """Map a WhatsApp status event to the corresponding CampaignMessage row."""
     wamid: str | None = event.get("id")
@@ -190,6 +247,17 @@ def _handle_incoming_message(message: dict, db: Session) -> None:
         # Send reply via WhatsApp
         WhatsAppService().send_text(phone, ai_reply)
         logger.info("AI reply sent", extra={"phone": phone})
+
+        # If user asked about invoices and we have invoice data, send PDF
+        user_msg_lower = text_body.lower()
+        has_invoices = odoo_context and odoo_context.get("invoices")
+        is_invoice_request = any(
+            keyword in user_msg_lower
+            for keyword in ["invoice", "bill", "pdf", "document", "payment"]
+        )
+
+        if is_invoice_request and has_invoices and contact and contact.odoo_partner_id:
+            _send_invoice_pdfs(phone, odoo_context.get("invoices", []), db)
 
     except Exception:
         logger.exception(
