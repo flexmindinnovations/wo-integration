@@ -82,18 +82,32 @@ def _send_invoice_pdfs(phone: str, invoices: list[dict], db: Session) -> None:
                 if not invoice_id:
                     continue
 
-                # Fetch PDF from Odoo
-                pdf_bytes = odoo.get_invoice_pdf(invoice_id)
-
-                # Upload to Meta and get media ID
-                media_id = whatsapp.upload_media(
-                    pdf_bytes,
-                    f"{invoice_name}.pdf",
-                    "application/pdf"
+                logger.info(
+                    "Starting invoice PDF fetch and send",
+                    extra={"phone": phone, "invoice_id": invoice_id, "invoice_name": invoice_name}
                 )
 
-                # Send the document using media ID
-                whatsapp.send_document_by_id(phone, media_id, f"{invoice_name}")
+                # Fetch PDF from Odoo
+                pdf_bytes = odoo.get_invoice_pdf(invoice_id)
+                logger.info(
+                    "Invoice PDF fetched successfully",
+                    extra={"phone": phone, "invoice_id": invoice_id, "pdf_size": len(pdf_bytes)}
+                )
+
+                # Upload to Meta and get media ID
+                upload_filename = f"{invoice_name}.pdf"
+                media_id = whatsapp.upload_media(
+                    pdf_bytes,
+                    upload_filename,
+                    "application/pdf"
+                )
+                logger.info(
+                    "Invoice PDF uploaded to Meta",
+                    extra={"phone": phone, "invoice_id": invoice_id, "media_id": media_id}
+                )
+
+                # Send the document using media ID with proper filename
+                whatsapp.send_document_by_id(phone, media_id, invoice_name)
                 logger.info(
                     "Invoice PDF sent successfully",
                     extra={"phone": phone, "invoice_id": invoice_id, "invoice_name": invoice_name}

@@ -339,20 +339,39 @@ class OdooService:
                     )
                     continue
 
-            # Fallback: use report API endpoint
-            password = settings.ODOO_PASSWORD or settings.ODOO_API_KEY or ""
-            report_url = f"{settings.ODOO_URL}/report/pdf/account.invoice/{invoice_id}"
-            response = requests.get(
-                report_url,
-                auth=(settings.ODOO_USERNAME, password) if password else None,
-                timeout=30
-            )
-            response.raise_for_status()
-            logger.info(
-                "Invoice PDF fetched via report endpoint",
-                extra={"invoice_id": invoice_id}
-            )
-            return response.content
+            # Fallback: try account.move and account.invoice report endpoints
+            for report_model in ["account.move", "account.invoice"]:
+                try:
+                    password = settings.ODOO_PASSWORD or settings.ODOO_API_KEY or ""
+                    report_url = f"{settings.ODOO_URL}/report/pdf/{report_model}/{invoice_id}"
+                    response = requests.get(
+                        report_url,
+                        auth=(settings.ODOO_USERNAME, password) if password else None,
+                        timeout=30,
+                        verify=True
+                    )
+                    response.raise_for_status()
+
+                    # Verify it's a valid PDF
+                    if response.content.startswith(b"%PDF"):
+                        logger.info(
+                            "Invoice PDF fetched via report endpoint",
+                            extra={"invoice_id": invoice_id, "model": report_model, "size": len(response.content)}
+                        )
+                        return response.content
+                    else:
+                        logger.warning(
+                            "Invalid PDF content from report endpoint",
+                            extra={"invoice_id": invoice_id, "model": report_model, "first_bytes": response.content[:20]}
+                        )
+                except Exception as e:
+                    logger.debug(
+                        f"Could not fetch PDF from {report_model} report endpoint",
+                        extra={"invoice_id": invoice_id, "error": str(e)}
+                    )
+                    continue
+
+            raise ValueError("Could not fetch valid PDF from any Odoo endpoint")
 
         except Exception as e:
             logger.error(

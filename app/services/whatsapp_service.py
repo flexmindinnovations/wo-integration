@@ -150,7 +150,7 @@ class WhatsAppService:
         Args:
             phone: WhatsApp phone number
             media_id: Media ID from upload_media()
-            filename: Optional filename to display
+            filename: Optional filename to display (e.g., "INV/26-27/0003.pdf")
         """
         phone = "".join(ch for ch in phone if ch.isdigit())
         payload = {
@@ -161,8 +161,14 @@ class WhatsAppService:
                 "id": media_id,
             },
         }
+        # Use caption or filename field depending on Meta's current API
         if filename:
+            # Try caption first (may be used for display)
             payload["document"]["caption"] = filename
+            # Also add filename field if supported
+            if not filename.endswith(".pdf"):
+                filename = f"{filename}.pdf"
+            payload["document"]["filename"] = filename
 
         response = requests.post(self._url, headers=self._headers, json=payload, timeout=30)
         response.raise_for_status()
