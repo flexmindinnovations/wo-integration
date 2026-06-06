@@ -314,192 +314,116 @@ class OdooService:
 
     def get_invoice_pdf(self, invoice_id: int) -> bytes:
         """
-        Fetch invoice PDF from Odoo using the Odoo 19 API.
-        Returns PDF bytes that can be uploaded to WhatsApp.
+        Fetch invoice PDF from Odoo via custom API endpoint with token authentication.
 
-        Uses ir.actions.report._get_report_from_name() and render_qweb_pdf()
-        which is the recommended Odoo 19 approach.
+        This uses the custom 'whatsapp_invoice_api' module installed in Odoo,
+        which provides secure token-based PDF retrieval.
+
+        Args:
+            invoice_id: The Odoo invoice ID
+
+        Returns:
+            PDF bytes that can be uploaded to WhatsApp
         """
         try:
+            # Use custom API endpoint with token authentication
+            api_token = settings.ODOO_API_KEY
+            api_url = f"{settings.ODOO_URL}/api/invoice/pdf/{invoice_id}"
+
             logger.info(
-                "Attempting to fetch invoice PDF from Odoo",
-                extra={"invoice_id": invoice_id}
+                "Fetching invoice PDF via custom Odoo API endpoint",
+                extra={"invoice_id": invoice_id, "endpoint": "/api/invoice/pdf/"}
             )
-
-            # Note: Odoo 19.3 limitation - render_qweb_pdf method doesn't exist on ir.actions.report
-            # Skipping RPC method and using HTTP endpoint fallback + PDF generation
-
-            if False:  # Disabled: render_qweb_pdf doesn't exist in Odoo 19.3
-                report_names_to_try = [
-                    "account.report_invoice",
-                    "account.invoice_report",
-                ]
-
-            for report_name in []:
-                try:
-                    logger.info(
-                        f"Searching for report",
-                        extra={"invoice_id": invoice_id, "report_name": report_name}
-                    )
-
-                    try:
-                        # Get the report action by name
-                        report = self._execute(
-                            "ir.actions.report",
-                            "search_read",
-                            [[["report_name", "=", report_name]]],
-                            {"fields": ["id", "name", "report_name"]}
-                        )
-
-                        logger.info(
-                            f"Report search result",
-                            extra={"invoice_id": invoice_id, "report_name": report_name, "found": bool(report), "count": len(report) if report else 0}
-                        )
-                    except Exception as search_error:
-                        logger.error(
-                            f"Report search failed",
-                            extra={"invoice_id": invoice_id, "report_name": report_name, "error": str(search_error)}
-                        )
-
-                        # Try to list all available reports for debugging
-                        try:
-                            logger.info("Attempting to list all available reports")
-                            all_reports = self._execute(
-                                "ir.actions.report",
-                                "search_read",
-                                [[]],
-                                {"fields": ["id", "name", "report_name"], "limit": 20}
-                            )
-                            report_names = [r.get("report_name") for r in all_reports]
-                            logger.info(
-                                "All available reports",
-                                extra={"invoice_id": invoice_id, "available_reports": report_names}
-                            )
-                        except Exception as list_error:
-                            logger.error(f"Could not list reports: {str(list_error)}")
-
-                        continue
-
-                    if not report:
-                        # Try to list all available reports for debugging
-                        try:
-                            logger.info("No reports found for that name, listing invoice-related reports")
-                            all_reports = self._execute(
-                                "ir.actions.report",
-                                "search_read",
-                                [[["report_name", "like", "invoice"]]],
-                                {"fields": ["id", "name", "report_name"]}
-                            )
-                            report_names = [r.get("report_name") for r in all_reports]
-                            logger.info(
-                                "Available invoice-related reports",
-                                extra={"invoice_id": invoice_id, "available_reports": report_names}
-                            )
-                        except Exception as e:
-                            logger.error(f"Could not fetch available reports: {str(e)}")
-
-                        continue
-
-                    report_id = report[0]["id"]
-                    logger.info(
-                        f"Found report, attempting to render PDF",
-                        extra={"invoice_id": invoice_id, "report_id": report_id, "report_name": report_name}
-                    )
-
-                    try:
-                        # Render the report to PDF
-                        pdf_content = self._execute(
-                            "ir.actions.report",
-                            "render_qweb_pdf",
-                            [report_id, [invoice_id]],
-                            {}
-                        )
-
-                        logger.info(
-                            f"PDF render result",
-                            extra={"invoice_id": invoice_id, "report_name": report_name, "has_content": bool(pdf_content), "type": type(pdf_content).__name__}
-                        )
-                    except Exception as render_error:
-                        logger.error(
-                            f"PDF render failed",
-                            extra={"invoice_id": invoice_id, "report_name": report_name, "error": str(render_error)}
-                        )
-                        continue
-
-                    if pdf_content:
-                        # render_qweb_pdf returns [pdf_bytes, mime_type] or similar
-                        if isinstance(pdf_content, list) and len(pdf_content) > 0:
-                            pdf_data = pdf_content[0]
-                        else:
-                            pdf_data = pdf_content
-
-                        # Handle base64 encoding if needed
-                        if isinstance(pdf_data, str):
-                            pdf_bytes = base64.b64decode(pdf_data)
-                        elif isinstance(pdf_data, bytes):
-                            pdf_bytes = pdf_data
-                        else:
-                            # If it's not bytes or string, try to convert
-                            pdf_bytes = bytes(pdf_data) if pdf_data else b""
-
-                        logger.info(
-                            "Invoice PDF fetched via Odoo 19 API",
-                            extra={"invoice_id": invoice_id, "report": report_name, "size": len(pdf_bytes)}
-                        )
-                        return pdf_bytes
-
-                except Exception as e:
-                    logger.debug(
-                        f"Failed to fetch PDF using report {report_name}",
-                        extra={"invoice_id": invoice_id, "error": str(e)}
-                    )
-                    continue
-
-            # Method 2: Fallback - Try HTTP report endpoint
-            logger.info(
-                "Trying fallback HTTP report endpoint",
-                extra={"invoice_id": invoice_id}
-            )
-            password = settings.ODOO_PASSWORD or settings.ODOO_API_KEY or ""
-            report_url = f"{settings.ODOO_URL}/report/pdf/account.report_invoice/{invoice_id}"
 
             response = requests.get(
-                report_url,
-                auth=(settings.ODOO_USERNAME, password) if password else None,
+                api_url,
+                params={"token": api_token},
                 timeout=30,
-                verify=True
+                verify=True,
+                headers={"Accept": "application/pdf"}
             )
 
-            # Check if we got HTML (error page) instead of PDF
-            if response.content.startswith(b"<!DOCTYPE") or response.content.startswith(b"<html"):
-                logger.debug(
-                    "Got HTML response from report endpoint (likely auth failure)",
-                    extra={"invoice_id": invoice_id, "status": response.status_code}
+            # Handle different error cases
+            if response.status_code == 401:
+                logger.error(
+                    "API authentication failed - token is invalid or expired",
+                    extra={"invoice_id": invoice_id}
                 )
-            else:
-                response.raise_for_status()
+                raise ValueError(
+                    "Odoo API token invalid. Ensure the custom module is installed "
+                    "and the API token is correct."
+                )
 
-                # Verify it's a valid PDF
-                if response.content.startswith(b"%PDF"):
-                    logger.info(
-                        "Invoice PDF fetched via HTTP report endpoint",
-                        extra={"invoice_id": invoice_id, "size": len(response.content)}
-                    )
-                    return response.content
+            if response.status_code == 404:
+                logger.warning(
+                    "Invoice not found in Odoo",
+                    extra={"invoice_id": invoice_id}
+                )
+                raise ValueError(f"Invoice {invoice_id} not found in Odoo")
 
-            logger.warning(
-                "Failed to fetch PDF from Odoo, will try PDF generation fallback",
+            if response.status_code == 400:
+                logger.warning(
+                    "Bad request to API",
+                    extra={"invoice_id": invoice_id, "response": response.text}
+                )
+                raise ValueError(f"Invalid invoice request: {response.text}")
+
+            if response.status_code != 200:
+                logger.error(
+                    "Unexpected API response",
+                    extra={
+                        "invoice_id": invoice_id,
+                        "status": response.status_code,
+                        "response": response.text[:200]
+                    }
+                )
+                raise ValueError(
+                    f"Failed to fetch PDF from Odoo API (status {response.status_code})"
+                )
+
+            # Verify it's a valid PDF
+            if not response.content.startswith(b"%PDF"):
+                logger.error(
+                    "Response is not a valid PDF",
+                    extra={"invoice_id": invoice_id, "first_bytes": response.content[:20]}
+                )
+                raise ValueError("Odoo returned invalid PDF content")
+
+            logger.info(
+                "Invoice PDF fetched successfully from Odoo API",
+                extra={
+                    "invoice_id": invoice_id,
+                    "size": len(response.content),
+                    "source": "odoo_api"
+                }
+            )
+
+            return response.content
+
+        except requests.exceptions.ConnectionError as e:
+            logger.error(
+                "Failed to connect to Odoo API",
+                extra={"invoice_id": invoice_id, "error": str(e)}
+            )
+            raise ValueError(f"Cannot reach Odoo instance: {str(e)}")
+
+        except requests.exceptions.Timeout:
+            logger.error(
+                "Odoo API request timed out",
                 extra={"invoice_id": invoice_id}
             )
-            raise ValueError(
-                f"Could not fetch valid PDF for invoice {invoice_id}. "
-                "Tried account.report_invoice and HTTP endpoint."
-            )
+            raise ValueError("Odoo API request timed out")
 
         except Exception as e:
             logger.error(
-                "Failed to fetch invoice PDF from Odoo",
+                "Failed to fetch invoice PDF from Odoo API",
                 extra={"invoice_id": invoice_id, "error": str(e)}
+            )
+
+            # Fallback to local PDF generation if API fails
+            logger.info(
+                "Falling back to local PDF generation",
+                extra={"invoice_id": invoice_id}
             )
             raise
 
