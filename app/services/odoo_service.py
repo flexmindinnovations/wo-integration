@@ -554,12 +554,12 @@ class OdooService:
             amount = invoice_data.get("amount_total", 0)
             payment_state = invoice_data.get("payment_state", "unknown").replace("_", " ").title()
 
-            # Details table
+            # Details table with proper rupee symbol
             details_data = [
                 ["Invoice Number:", invoice_number],
                 ["Invoice Date:", str(invoice_date)],
                 ["Due Date:", str(due_date)],
-                ["Amount:", f"₹{amount:,.2f}"],
+                ["Amount (INR):", f"₹ {amount:,.2f}"],
                 ["Status:", payment_state],
             ]
 
