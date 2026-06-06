@@ -321,21 +321,21 @@ class OdooService:
         which is the recommended Odoo 19 approach.
         """
         try:
-            # Odoo 19 API: Get the invoice report and render it to PDF
-            # This uses the built-in account.report_invoice report
-
             logger.info(
-                "Fetching invoice PDF using Odoo 19 API",
+                "Attempting to fetch invoice PDF from Odoo",
                 extra={"invoice_id": invoice_id}
             )
 
-            # Method 1: Try to get and render the standard invoice report
-            report_names_to_try = [
-                "account.report_invoice",
-                "account.invoice_report",
-            ]
+            # Note: Odoo 19.3 limitation - render_qweb_pdf method doesn't exist on ir.actions.report
+            # Skipping RPC method and using HTTP endpoint fallback + PDF generation
 
-            for report_name in report_names_to_try:
+            if False:  # Disabled: render_qweb_pdf doesn't exist in Odoo 19.3
+                report_names_to_try = [
+                    "account.report_invoice",
+                    "account.invoice_report",
+                ]
+
+            for report_name in []:
                 try:
                     logger.info(
                         f"Searching for report",
