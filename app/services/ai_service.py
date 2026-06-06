@@ -147,6 +147,9 @@ class AiService:
                     prompt += f"  • {name}: ₹{amount:.2f} (Date: {due}, Status: {state})\n"
                 prompt += "\n"
 
+                # Note about PDF being sent
+                prompt += "✅ PDF invoice(s) will be sent to you in this chat.\n\n"
+
             if has_orders:
                 prompt += "Recent Orders:\n"
                 for order in odoo_context["orders"][:3]:
@@ -167,6 +170,7 @@ class AiService:
                 "Be concise for WhatsApp (short paragraphs). "
                 "When the customer asks about invoices, orders, or payments, refer to the details above. "
                 "If they ask 'what invoices do I have', list the outstanding invoices shown above. "
+                "Do NOT say 'I can't send you the PDF' - the PDF invoice(s) are being sent in this chat. "
                 "Offer solutions based on their account status. "
                 "If you need more information, ask politely. "
                 "If unsure, be honest."
