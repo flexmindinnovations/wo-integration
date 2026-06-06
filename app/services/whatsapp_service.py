@@ -78,27 +78,70 @@ class WhatsAppService:
         Returns:
             Media ID from Meta's API
         """
-        files = {
-            "file": (filename, file_bytes, mimetype),
-        }
-        headers = {
-            "Authorization": f"Bearer {self._token}",
-        }
+        try:
+            # Determine media type from mimetype
+            if "pdf" in mimetype.lower():
+                media_type = "document"
+            elif "image" in mimetype.lower():
+                media_type = "image"
+            elif "audio" in mimetype.lower():
+                media_type = "audio"
+            elif "video" in mimetype.lower():
+                media_type = "video"
+            else:
+                media_type = "document"
 
-        response = requests.post(
-            self._media_url,
-            files=files,
-            headers=headers,
-            timeout=30
-        )
-        response.raise_for_status()
-        data = response.json()
-        media_id = data.get("id")
-        logger.info(
-            "Media uploaded to Meta",
-            extra={"filename": filename, "media_id": media_id}
-        )
-        return media_id
+            # Meta API requires both files and data parameters
+            files = {
+                "file": (filename, file_bytes, mimetype),
+            }
+            data = {
+                "messaging_product": "whatsapp",
+                "type": media_type,
+            }
+            headers = {
+                "Authorization": f"Bearer {self._token}",
+            }
+
+            logger.info(
+                "Uploading media to Meta",
+                extra={"filename": filename, "size": len(file_bytes), "mimetype": mimetype, "type": media_type}
+            )
+
+            response = requests.post(
+                self._media_url,
+                files=files,
+                data=data,
+                headers=headers,
+                timeout=60
+            )
+
+            if not response.ok:
+                error_detail = response.text
+                logger.error(
+                    "Media upload failed",
+                    extra={
+                        "filename": filename,
+                        "status": response.status_code,
+                        "error": error_detail
+                    }
+                )
+                response.raise_for_status()
+
+            data = response.json()
+            media_id = data.get("id")
+            logger.info(
+                "Media uploaded to Meta successfully",
+                extra={"filename": filename, "media_id": media_id}
+            )
+            return media_id
+
+        except Exception as e:
+            logger.error(
+                "Exception during media upload",
+                extra={"filename": filename, "error": str(e)}
+            )
+            raise
 
     def send_document_by_id(self, phone: str, media_id: str, filename: str | None = None) -> dict:
         """
