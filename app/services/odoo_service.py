@@ -136,45 +136,58 @@ class OdooService:
 
     def fetch_customer_invoices(self, partner_id: int, limit: int = 5) -> list[dict]:
         """Fetch unpaid/open invoices for a customer. Returns empty list if model unavailable."""
-        # Try Odoo 13+ model first (account.move), fallback to legacy (account.invoice)
+        # Odoo 19+ uses account.move without due_date field, older versions may have it
+        # Try multiple field combinations for compatibility across versions
         models_to_try = [
             ("account.move", [
                 ["partner_id", "=", partner_id],
                 ["move_type", "in", ["out_invoice", "out_refund"]],
                 ["payment_state", "!=", "paid"]
-            ], ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"]),
+            ], [
+                # Odoo 19+ compatible: no due_date
+                ["id", "name", "invoice_date", "amount_total", "payment_state"],
+                # Fallback for older versions that have due_date
+                ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"],
+            ]),
             ("account.invoice", [
                 ["partner_id", "=", partner_id],
                 ["payment_state", "!=", "paid"]
-            ], ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"]),
+            ], [
+                ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"],
+            ]),
         ]
 
         errors_encountered = []
-        for model, domain, fields in models_to_try:
-            try:
-                invoices = self._execute(
-                    model,
-                    "search_read",
-                    [domain],
-                    {
-                        "fields": fields,
-                        "order": "invoice_date DESC",
-                        "limit": limit
-                    }
-                )
-                logger.info(
-                    "Customer invoices fetched",
-                    extra={"partner_id": partner_id, "count": len(invoices), "model": model}
-                )
-                return invoices
-            except Exception as e:
-                error_msg = str(e)
-                errors_encountered.append(f"{model}: {error_msg}")
-                logger.debug(
-                    f"Model {model} not available",
-                    extra={"partner_id": partner_id, "error": error_msg}
-                )
-                continue
+        for model, domain, field_lists in models_to_try:
+            # Try each field list for the model (in case some fields don't exist)
+            field_lists = field_lists if isinstance(field_lists[0], list) else [field_lists]
+
+            for fields in field_lists:
+                try:
+                    invoices = self._execute(
+                        model,
+                        "search_read",
+                        [domain],
+                        {
+                            "fields": fields,
+                            "order": "invoice_date DESC",
+                            "limit": limit
+                        }
+                    )
+                    logger.info(
+                        "Customer invoices fetched",
+                        extra={"partner_id": partner_id, "count": len(invoices), "model": model, "fields": fields}
+                    )
+                    return invoices
+                except Exception as e:
+                    error_msg = str(e)
+                    logger.debug(
+                        f"Model {model} with fields {fields} not available",
+                        extra={"partner_id": partner_id, "error": error_msg}
+                    )
+                    continue
+
+            errors_encountered.append(f"{model}: failed all field combinations")
 
         logger.warning(
             "Could not fetch invoices — no accounting model accessible. Check if accounting module is installed and enabled.",
