@@ -324,22 +324,47 @@ class OdooService:
 
             for report_name in report_names_to_try:
                 try:
+                    logger.info(
+                        f"Searching for report",
+                        extra={"invoice_id": invoice_id, "report_name": report_name}
+                    )
+
                     # Get the report action by name
                     report = self._execute(
                         "ir.actions.report",
                         "search_read",
                         [[["report_name", "=", report_name]]],
-                        {"fields": ["id"]}
+                        {"fields": ["id", "name", "report_name"]}
+                    )
+
+                    logger.info(
+                        f"Report search result",
+                        extra={"invoice_id": invoice_id, "report_name": report_name, "found": bool(report), "count": len(report) if report else 0}
                     )
 
                     if not report:
-                        logger.debug(
-                            f"Report {report_name} not found",
-                            extra={"invoice_id": invoice_id}
-                        )
+                        # Try to list all available reports for debugging
+                        try:
+                            all_reports = self._execute(
+                                "ir.actions.report",
+                                "search_read",
+                                [[["report_name", "like", "invoice"]]],
+                                {"fields": ["id", "name", "report_name"]}
+                            )
+                            logger.info(
+                                "Available invoice-related reports",
+                                extra={"invoice_id": invoice_id, "available_reports": [r.get("report_name") for r in all_reports]}
+                            )
+                        except Exception as e:
+                            logger.debug(f"Could not fetch available reports: {str(e)}")
+
                         continue
 
                     report_id = report[0]["id"]
+                    logger.info(
+                        f"Found report, attempting to render PDF",
+                        extra={"invoice_id": invoice_id, "report_id": report_id, "report_name": report_name}
+                    )
 
                     # Render the report to PDF
                     pdf_content = self._execute(
@@ -347,6 +372,11 @@ class OdooService:
                         "render_qweb_pdf",
                         [report_id, [invoice_id]],
                         {}
+                    )
+
+                    logger.info(
+                        f"PDF render result",
+                        extra={"invoice_id": invoice_id, "report_name": report_name, "has_content": bool(pdf_content), "type": type(pdf_content).__name__}
                     )
 
                     if pdf_content:
