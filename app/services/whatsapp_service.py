@@ -105,7 +105,7 @@ class WhatsAppService:
 
             logger.info(
                 "Uploading media to Meta",
-                extra={"filename": filename, "size": len(file_bytes), "mimetype": mimetype, "type": media_type}
+                extra={"file_name": filename, "size": len(file_bytes), "mimetype": mimetype, "type": media_type}
             )
 
             response = requests.post(
@@ -121,7 +121,7 @@ class WhatsAppService:
                 logger.error(
                     "Media upload failed",
                     extra={
-                        "filename": filename,
+                        "file_name": filename,
                         "status": response.status_code,
                         "error": error_detail
                     }
@@ -132,14 +132,14 @@ class WhatsAppService:
             media_id = data.get("id")
             logger.info(
                 "Media uploaded to Meta successfully",
-                extra={"filename": filename, "media_id": media_id}
+                extra={"file_name": filename, "media_id": media_id}
             )
             return media_id
 
         except Exception as e:
             logger.error(
                 "Exception during media upload",
-                extra={"filename": filename, "error": str(e)}
+                extra={"file_name": filename, "error": str(e)}
             )
             raise
 
@@ -168,7 +168,7 @@ class WhatsAppService:
         response.raise_for_status()
         logger.info(
             "WhatsApp document sent",
-            extra={"phone": phone, "filename": filename, "media_id": media_id},
+            extra={"phone": phone, "file_name": filename, "media_id": media_id},
         )
         return response.json()
 
@@ -197,6 +197,6 @@ class WhatsAppService:
         response.raise_for_status()
         logger.info(
             "WhatsApp document sent via URL",
-            extra={"phone": phone, "filename": filename},
+            extra={"phone": phone, "file_name": filename},
         )
         return response.json()
