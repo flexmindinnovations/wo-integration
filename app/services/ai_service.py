@@ -113,6 +113,7 @@ class AiService:
                 "has_invoices": bool(has_invoices),
                 "has_orders": bool(has_orders),
                 "invoice_count": len(odoo_context.get("invoices", [])) if odoo_context else 0,
+                "full_invoices": odoo_context.get("invoices", []) if odoo_context else [],
             },
         )
         return reply

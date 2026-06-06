@@ -270,8 +270,31 @@ def _handle_incoming_message(message: dict, db: Session) -> None:
             for keyword in ["invoice", "bill", "pdf", "document", "payment"]
         )
 
+        logger.info(
+            "Checking if should send invoice PDFs",
+            extra={
+                "phone": phone,
+                "is_invoice_request": is_invoice_request,
+                "has_invoices": bool(has_invoices),
+                "invoice_count": len(odoo_context.get("invoices", [])) if has_invoices else 0,
+                "has_contact": contact is not None,
+                "has_odoo_partner": contact.odoo_partner_id if contact else None,
+            }
+        )
+
         if is_invoice_request and has_invoices and contact and contact.odoo_partner_id:
+            logger.info("Sending invoice PDFs", extra={"phone": phone, "count": len(odoo_context.get("invoices", []))})
             _send_invoice_pdfs(phone, odoo_context.get("invoices", []), db)
+        else:
+            logger.info(
+                "Not sending PDFs (conditions not met)",
+                extra={
+                    "phone": phone,
+                    "is_invoice_request": is_invoice_request,
+                    "has_invoices": bool(has_invoices),
+                    "has_contact": contact is not None,
+                }
+            )
 
     except Exception:
         logger.exception(
