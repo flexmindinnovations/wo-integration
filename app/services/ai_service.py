@@ -102,10 +102,18 @@ class AiService:
         )
 
         reply: str = response.text
-        has_context = odoo_context is not None and (odoo_context.get("invoices") or odoo_context.get("orders"))
+        has_invoices = odoo_context is not None and odoo_context.get("invoices")
+        has_orders = odoo_context is not None and odoo_context.get("orders")
+        access_success = odoo_context.get("access_success", False) if odoo_context else False
         logger.info(
             "AI reply generated with context",
-            extra={"phone": phone, "has_odoo_context": has_context},
+            extra={
+                "phone": phone,
+                "odoo_access_success": access_success,
+                "has_invoices": bool(has_invoices),
+                "has_orders": bool(has_orders),
+                "invoice_count": len(odoo_context.get("invoices", [])) if odoo_context else 0,
+            },
         )
         return reply
 
@@ -129,12 +137,13 @@ class AiService:
         # Case 1: Odoo access succeeded and has data
         if access_success and has_any_business_data:
             if has_invoices:
-                prompt += "Outstanding Invoices:\n"
-                for inv in odoo_context["invoices"][:3]:
+                prompt += f"📋 OUTSTANDING INVOICES ({len(odoo_context['invoices'])} total):\n"
+                for inv in odoo_context["invoices"][:5]:
                     due = inv.get("due_date", "N/A")
                     amount = inv.get("amount_total", 0)
                     state = inv.get("payment_state", "unknown")
-                    prompt += f"  • {inv['name']}: ₹{amount:.2f} (Due: {due}, Status: {state})\n"
+                    name = inv.get("name", "Unknown")
+                    prompt += f"  • {name}: ₹{amount:.2f} (Due: {due}, Status: {state})\n"
                 prompt += "\n"
 
             if has_orders:
@@ -155,6 +164,8 @@ class AiService:
             prompt += (
                 "Use this account information to provide personalized, helpful responses. "
                 "Be concise for WhatsApp (short paragraphs). "
+                "When the customer asks about invoices, orders, or payments, refer to the details above. "
+                "If they ask 'what invoices do I have', list the outstanding invoices shown above. "
                 "Offer solutions based on their account status. "
                 "If you need more information, ask politely. "
                 "If unsure, be honest."

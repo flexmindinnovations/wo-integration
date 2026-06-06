@@ -6,8 +6,10 @@ from app.config import settings
 from app.database import get_db
 from app.models.campaign_message import CampaignMessage, DeliveryStatus
 from app.models.conversation_message import ConversationMessage, MessageRole
+from app.models.contact import Contact
 from app.services.ai_service import AiService
 from app.services.whatsapp_service import WhatsAppService
+from app.services.odoo_service import OdooService
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 logger = logging.getLogger(__name__)
@@ -157,11 +159,16 @@ def _handle_incoming_message(message: dict, db: Session) -> None:
                 from app.services.odoo_service import OdooService
                 odoo = OdooService()
                 odoo_context = odoo.fetch_customer_context(contact.odoo_partner_id)
-            except Exception:
+            except Exception as e:
                 logger.warning(
                     "Failed to fetch Odoo context — proceeding with generic reply",
-                    extra={"phone": phone, "partner_id": contact.odoo_partner_id},
+                    extra={"phone": phone, "partner_id": contact.odoo_partner_id, "error": str(e)},
                 )
+        else:
+            logger.warning(
+                "Contact not linked to Odoo or contact not found",
+                extra={"phone": phone, "contact_found": contact is not None, "has_partner_id": contact.odoo_partner_id if contact else None},
+            )
 
         # Generate AI reply with context
         ai_reply = AiService().generate_reply_with_context(
@@ -193,3 +200,79 @@ def _handle_incoming_message(message: dict, db: Session) -> None:
             db.rollback()
         except Exception:
             pass
+
+
+@router.get("/debug/invoice/{phone}", summary="Debug invoice fetch for a phone number")
+def debug_invoice_fetch(phone: str, db: Session = Depends(get_db)):
+    """
+    Diagnostic endpoint to debug why invoices aren't being fetched.
+
+    Returns:
+    - Contact details if found
+    - Odoo partner ID
+    - Fetched invoices
+    - Any errors encountered
+    """
+    try:
+        contact = db.query(Contact).filter(Contact.phone == phone).first()
+
+        if not contact:
+            return {
+                "phone": phone,
+                "status": "contact_not_found",
+                "message": "Contact with this phone number not found in database"
+            }
+
+        response = {
+            "phone": phone,
+            "contact_found": True,
+            "contact_id": contact.id,
+            "contact_name": contact.name,
+            "odoo_partner_id": contact.odoo_partner_id,
+        }
+
+        if not contact.odoo_partner_id:
+            return {
+                **response,
+                "status": "no_odoo_link",
+                "message": "Contact is not linked to any Odoo partner. Run contact sync first."
+            }
+
+        # Try to fetch Odoo context
+        try:
+            odoo = OdooService()
+            context = odoo.fetch_customer_context(contact.odoo_partner_id)
+
+            return {
+                **response,
+                "status": "success",
+                "odoo_context": {
+                    "access_success": context.get("access_success"),
+                    "company_name": context.get("company_name"),
+                    "invoice_count": len(context.get("invoices", [])),
+                    "invoices": [
+                        {
+                            "name": inv.get("name"),
+                            "amount": inv.get("amount_total"),
+                            "due_date": inv.get("due_date"),
+                            "payment_state": inv.get("payment_state")
+                        }
+                        for inv in context.get("invoices", [])
+                    ],
+                    "order_count": len(context.get("orders", [])),
+                    "payment_count": len(context.get("payments", [])),
+                }
+            }
+        except Exception as e:
+            return {
+                **response,
+                "status": "odoo_error",
+                "message": f"Failed to fetch Odoo context: {str(e)}"
+            }
+
+    except Exception as e:
+        logger.exception("Error in debug endpoint", extra={"phone": phone})
+        return {
+            "status": "error",
+            "message": f"Unexpected error: {str(e)}"
+        }
