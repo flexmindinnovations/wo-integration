@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 import google.generativeai as genai
 
 from app.config import settings
-from app.models.conversation_message import ConversationMessage, MessageRole
+from app.models.conversation_message import ConversationMessage
 
 logger = logging.getLogger(__name__)
 
