@@ -11,6 +11,7 @@ from app.models.campaign import Campaign, CampaignStatus
 from app.models.campaign_message import CampaignMessage, DeliveryStatus
 from app.models.contact import Contact
 from app.services.whatsapp_service import WhatsAppService
+from app.constants import CampaignDefaults, LogMessages
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +60,8 @@ def _execute(campaign_id: int, db: Session) -> None:
     logger.info("Campaign job started", extra={"campaign_id": campaign_id, "campaign_name": campaign.name})
 
     whatsapp = WhatsAppService()
-    batch_size = settings.CAMPAIGN_BATCH_SIZE
-    delay = settings.MESSAGE_DELAY_SECONDS
+    batch_size = settings.CAMPAIGN_BATCH_SIZE or CampaignDefaults.BATCH_SIZE
+    delay = settings.MESSAGE_DELAY_SECONDS or CampaignDefaults.MESSAGE_DELAY_SECONDS
 
     pending = (
         db.query(CampaignMessage)
@@ -130,7 +131,7 @@ def _send_with_retry(
     msg: CampaignMessage,
     db: Session,
 ) -> bool:
-    max_retries = settings.MAX_RETRY_ATTEMPTS
+    max_retries = settings.MAX_RETRY_ATTEMPTS or CampaignDefaults.MAX_RETRY_ATTEMPTS
     last_error: Exception | None = None
 
     for attempt in range(1, max_retries + 1):
@@ -170,7 +171,7 @@ def _send_with_retry(
                 },
             )
             if attempt < max_retries:
-                time.sleep(2**attempt)  # exponential backoff: 2 s, 4 s
+                time.sleep(CampaignDefaults.RETRY_BACKOFF_BASE**attempt)
 
     msg.delivery_status = DeliveryStatus.failed
     msg.error_message = str(last_error)

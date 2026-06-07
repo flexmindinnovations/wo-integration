@@ -1,18 +1,20 @@
 import logging
 import requests
 from app.config import settings
+from app.constants import (
+    WhatsAppApi, WhatsAppTemplate, WhatsAppMedia, ApiTimeouts,
+    PhoneFormatting, LogMessages, HttpStatusCodes
+)
 
 logger = logging.getLogger(__name__)
-
-_GRAPH_API_BASE = "https://graph.facebook.com/v25.0"
 
 
 class WhatsAppService:
     def __init__(self) -> None:
         self._phone_number_id = settings.WHATSAPP_PHONE_NUMBER_ID
         self._token = settings.WHATSAPP_TOKEN
-        self._url = f"{_GRAPH_API_BASE}/{self._phone_number_id}/messages"
-        self._media_url = f"{_GRAPH_API_BASE}/{self._phone_number_id}/media"
+        self._url = f"{WhatsAppApi.BASE_URL}/{self._phone_number_id}/messages"
+        self._media_url = f"{WhatsAppApi.BASE_URL}/{self._phone_number_id}/media"
         self._headers = {
             "Authorization": f"Bearer {self._token}",
             "Content-Type": "application/json",
@@ -22,15 +24,15 @@ class WhatsAppService:
         self,
         phone: str,
         template_name: str,
-        language_code: str = "en",
+        language_code: str = WhatsAppTemplate.DEFAULT_LANGUAGE,
         components: list[dict] | None = None,
     ) -> dict:
         phone = "".join(ch for ch in phone if ch.isdigit())
 
         payload: dict = {
-            "messaging_product": "whatsapp",
+            WhatsAppApi.MESSAGING_PRODUCT: WhatsAppApi.MESSAGING_PRODUCT,
             "to": phone,
-            "type": "template",
+            "type": WhatsAppApi.MESSAGE_TYPE_TEMPLATE,
             "template": {
                 "name": template_name,
                 "language": {"code": language_code},
@@ -39,7 +41,7 @@ class WhatsAppService:
         if components:
             payload["template"]["components"] = components
 
-        response = requests.post(self._url, headers=self._headers, json=payload, timeout=30)
+        response = requests.post(self._url, headers=self._headers, json=payload, timeout=ApiTimeouts.DEFAULT)
         response.raise_for_status()
         data = response.json()
         logger.info(
@@ -57,12 +59,12 @@ class WhatsAppService:
         """
         phone = "".join(ch for ch in phone if ch.isdigit())
         payload = {
-            "messaging_product": "whatsapp",
+            "messaging_product": WhatsAppApi.MESSAGING_PRODUCT,
             "to": phone,
             "type": "text",
             "text": {"body": text},
         }
-        response = requests.post(self._url, headers=self._headers, json=payload, timeout=30)
+        response = requests.post(self._url, headers=self._headers, json=payload, timeout=ApiTimeouts.DEFAULT)
         response.raise_for_status()
         return response.json()
 
@@ -96,7 +98,7 @@ class WhatsAppService:
                 "file": (filename, file_bytes, mimetype),
             }
             data = {
-                "messaging_product": "whatsapp",
+                "messaging_product": WhatsAppApi.MESSAGING_PRODUCT,
                 "type": media_type,
             }
             headers = {
@@ -113,7 +115,7 @@ class WhatsAppService:
                 files=files,
                 data=data,
                 headers=headers,
-                timeout=60
+                timeout=ApiTimeouts.WHATSAPP_MEDIA_UPLOAD
             )
 
             if not response.ok:
@@ -154,7 +156,7 @@ class WhatsAppService:
         """
         phone = "".join(ch for ch in phone if ch.isdigit())
         payload = {
-            "messaging_product": "whatsapp",
+            "messaging_product": WhatsAppApi.MESSAGING_PRODUCT,
             "to": phone,
             "type": "document",
             "document": {
@@ -170,7 +172,7 @@ class WhatsAppService:
                 filename = f"{filename}.pdf"
             payload["document"]["filename"] = filename
 
-        response = requests.post(self._url, headers=self._headers, json=payload, timeout=30)
+        response = requests.post(self._url, headers=self._headers, json=payload, timeout=ApiTimeouts.DEFAULT)
         response.raise_for_status()
         logger.info(
             "WhatsApp document sent",
@@ -189,7 +191,7 @@ class WhatsAppService:
         """
         phone = "".join(ch for ch in phone if ch.isdigit())
         payload = {
-            "messaging_product": "whatsapp",
+            "messaging_product": WhatsAppApi.MESSAGING_PRODUCT,
             "to": phone,
             "type": "document",
             "document": {
@@ -199,7 +201,7 @@ class WhatsAppService:
         if filename:
             payload["document"]["caption"] = filename
 
-        response = requests.post(self._url, headers=self._headers, json=payload, timeout=30)
+        response = requests.post(self._url, headers=self._headers, json=payload, timeout=ApiTimeouts.DEFAULT)
         response.raise_for_status()
         logger.info(
             "WhatsApp document sent via URL",

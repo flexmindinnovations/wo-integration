@@ -2,12 +2,20 @@ import logging
 import xmlrpc.client
 import requests
 import base64
+import re
 from datetime import datetime
 from io import BytesIO
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models.contact import Contact
+from app.constants import (
+    OdooModels, OdooFieldsPartner, OdooFieldsInvoice, OdooFieldsInvoiceLine,
+    OdooFieldsSaleOrder, OdooFieldsPayment, OdooMoveTypes, OdooInvoiceStates,
+    OdooPaymentStates, OdooActions, OdooReports, ApiTimeouts, ApiDefaults,
+    OrderByField, InvoiceDefaults, ContactSync, CurrencySymbols, LogMessages,
+    Pagination, PhoneFormatting
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +97,17 @@ class OdooService:
 
     def fetch_partners(self) -> list[dict]:
         return self._execute(
-            "res.partner",
-            "search_read",
+            OdooModels.RES_PARTNER,
+            OdooActions.SEARCH_READ,
             [[["phone", "!=", False]]],
-            {"fields": ["id", "name", "phone", "email"]},
+            {
+                "fields": [
+                    OdooFieldsPartner.ID,
+                    OdooFieldsPartner.NAME,
+                    OdooFieldsPartner.PHONE,
+                    OdooFieldsPartner.EMAIL
+                ]
+            },
         )
 
     def create_partner(self, name: str, phone: str, email: str | None = None) -> int:
@@ -104,15 +119,15 @@ class OdooService:
             raise ValueError("Phone number must contain at least one digit")
 
         partner_id = self._execute(
-            "res.partner",
-            "create",
+            OdooModels.RES_PARTNER,
+            OdooActions.CREATE,
             [{
-                "name": name,
-                "phone": phone,
-                "email": email or False,
+                OdooFieldsPartner.NAME: name,
+                OdooFieldsPartner.PHONE: phone,
+                OdooFieldsPartner.EMAIL: email or False,
             }],
         )
-        logger.info("Contact created in Odoo", extra={"partner_id": partner_id, "name": name})
+        logger.info(LogMessages.ODOO_CONTACT_CREATED, extra={"partner_id": partner_id, "name": name})
         return partner_id
 
     def update_partner(self, partner_id: int, name: str | None = None, phone: str | None = None, email: str | None = None) -> bool:
@@ -187,26 +202,26 @@ class OdooService:
         )
         return {"created": created, "updated": updated, "skipped": skipped, "total": len(partners)}
 
-    def fetch_customer_invoices(self, partner_id: int, limit: int = 5) -> list[dict]:
+    def fetch_customer_invoices(self, partner_id: int, limit: int = ApiDefaults.INVOICE_LIMIT) -> list[dict]:
         """Fetch unpaid/open invoices for a customer. Returns empty list if model unavailable."""
         # Odoo 19+ uses account.move without due_date field, older versions may have it
         # Try multiple field combinations for compatibility across versions
         models_to_try = [
-            ("account.move", [
-                ["partner_id", "=", partner_id],
-                ["move_type", "in", ["out_invoice", "out_refund"]],
-                ["payment_state", "!=", "paid"]
+            (OdooModels.ACCOUNT_MOVE, [
+                [OdooFieldsInvoice.PARTNER_ID, "=", partner_id],
+                [OdooFieldsInvoice.MOVE_TYPE, "in", [OdooMoveTypes.OUT_INVOICE, OdooMoveTypes.OUT_REFUND]],
+                [OdooFieldsInvoice.PAYMENT_STATE, "!=", OdooPaymentStates.PAID]
             ], [
                 # Odoo 19+ compatible: no due_date
-                ["id", "name", "invoice_date", "amount_total", "payment_state"],
+                [OdooFieldsInvoice.ID, OdooFieldsInvoice.NAME, OdooFieldsInvoice.INVOICE_DATE, OdooFieldsInvoice.AMOUNT_TOTAL, OdooFieldsInvoice.PAYMENT_STATE],
                 # Fallback for older versions that have due_date
-                ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"],
+                [OdooFieldsInvoice.ID, OdooFieldsInvoice.NAME, OdooFieldsInvoice.INVOICE_DATE, OdooFieldsInvoice.DUE_DATE, OdooFieldsInvoice.AMOUNT_TOTAL, OdooFieldsInvoice.PAYMENT_STATE],
             ]),
-            ("account.invoice", [
-                ["partner_id", "=", partner_id],
-                ["payment_state", "!=", "paid"]
+            (OdooModels.ACCOUNT_INVOICE, [
+                [OdooFieldsInvoice.PARTNER_ID, "=", partner_id],
+                [OdooFieldsInvoice.PAYMENT_STATE, "!=", OdooPaymentStates.PAID]
             ], [
-                ["id", "name", "invoice_date", "due_date", "amount_total", "payment_state"],
+                [OdooFieldsInvoice.ID, OdooFieldsInvoice.NAME, OdooFieldsInvoice.INVOICE_DATE, OdooFieldsInvoice.DUE_DATE, OdooFieldsInvoice.AMOUNT_TOTAL, OdooFieldsInvoice.PAYMENT_STATE],
             ]),
         ]
 
@@ -276,19 +291,24 @@ class OdooService:
             )
             return []
 
-    def fetch_customer_payments(self, partner_id: int, limit: int = 3) -> list[dict]:
+    def fetch_customer_payments(self, partner_id: int, limit: int = ApiDefaults.PAYMENT_LIMIT) -> list[dict]:
         """Fetch recent payments from a customer. Returns empty list if model unavailable."""
         try:
             payments = self._execute(
-                "account.payment",
-                "search_read",
+                OdooModels.ACCOUNT_PAYMENT,
+                OdooActions.SEARCH_READ,
                 [[
-                    ["partner_id", "=", partner_id],
-                    ["state", "=", "posted"]
+                    [OdooFieldsPayment.PARTNER_ID, "=", partner_id],
+                    [OdooFieldsPayment.STATE, "=", OdooInvoiceStates.POSTED]
                 ]],
                 {
-                    "fields": ["id", "name", "date", "amount"],
-                    "order": "date DESC",
+                    "fields": [
+                        OdooFieldsPayment.ID,
+                        OdooFieldsPayment.NAME,
+                        OdooFieldsPayment.DATE,
+                        OdooFieldsPayment.AMOUNT
+                    ],
+                    "order": OrderByField.DATE,
                     "limit": limit
                 }
             )
@@ -376,7 +396,7 @@ class OdooService:
             response = requests.get(
                 api_url,
                 params={"token": api_token},
-                timeout=30,
+                timeout=ApiTimeouts.ODOO_PDF_FETCH,
                 verify=True,
                 headers={"Accept": "application/pdf"}
             )
@@ -521,7 +541,7 @@ class OdooService:
                 ["Invoice Number:", invoice_number],
                 ["Invoice Date:", str(invoice_date)],
                 ["Due Date:", str(due_date)],
-                ["Amount (INR):", f"₹ {amount:,.2f}"],
+                [f"Amount ({InvoiceDefaults.CURRENCY}):", f"{InvoiceDefaults.RUPEE_SYMBOL} {amount:,.2f}"],
                 ["Status:", payment_state],
             ]
 
@@ -570,16 +590,24 @@ class OdooService:
             )
             raise
 
-    def list_all_invoices(self, limit: int = 100, offset: int = 0) -> list[dict]:
+    def list_all_invoices(self, limit: int = Pagination.DEFAULT_LIMIT, offset: int = ApiDefaults.DEFAULT_OFFSET) -> list[dict]:
         """Fetch all customer invoices."""
         try:
             invoices = self._execute(
-                "account.move",
-                "search_read",
-                [[["move_type", "=", "out_invoice"]]],
+                OdooModels.ACCOUNT_MOVE,
+                OdooActions.SEARCH_READ,
+                [[[OdooFieldsInvoice.MOVE_TYPE, "=", OdooMoveTypes.OUT_INVOICE]]],
                 {
-                    "fields": ["id", "name", "partner_id", "invoice_date", "amount_total", "state", "payment_state"],
-                    "order": "invoice_date DESC",
+                    "fields": [
+                        OdooFieldsInvoice.ID,
+                        OdooFieldsInvoice.NAME,
+                        OdooFieldsInvoice.PARTNER_ID,
+                        OdooFieldsInvoice.INVOICE_DATE,
+                        OdooFieldsInvoice.AMOUNT_TOTAL,
+                        OdooFieldsInvoice.STATE,
+                        OdooFieldsInvoice.PAYMENT_STATE
+                    ],
+                    "order": OrderByField.INVOICE_DATE,
                     "limit": limit,
                     "offset": offset
                 }
