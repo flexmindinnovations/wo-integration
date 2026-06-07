@@ -3,8 +3,16 @@ import xmlrpc.client
 import requests
 from datetime import datetime
 from io import BytesIO
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 from sqlalchemy.orm import Session
+
+if TYPE_CHECKING:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.lib.enums import TA_CENTER
 
 from app.config import settings
 from app.models.contact import Contact
@@ -18,13 +26,9 @@ from app.constants import (
 
 logger = logging.getLogger(__name__)
 
-# Check if reportlab is available
+# Check if reportlab is available (for runtime checking only)
 try:
-    import reportlab.lib.pagesizes  # noqa: F401
-    import reportlab.lib.colors  # noqa: F401
-    import reportlab.platypus  # noqa: F401
-    import reportlab.lib.styles  # noqa: F401
-    import reportlab.lib.units  # noqa: F401
+    import reportlab.lib.pagesizes
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
