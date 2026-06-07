@@ -11,6 +11,7 @@ from app.models.contact import Contact
 from app.schemas.invoice import InvoiceCreate, InvoiceOut, InvoiceLineCreate
 from app.services.odoo_service import OdooService
 from app.services.whatsapp_service import WhatsAppService
+from app.constants import Pagination, HttpStatusCodes, InvoiceDefaults
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/invoices", tags=["Invoices"])
@@ -21,20 +22,20 @@ router = APIRouter(prefix="/invoices", tags=["Invoices"])
     response_model=List[InvoiceOut],
     summary="List all invoices from Odoo",
 )
-def list_invoices(skip: int = 0, limit: int = 100):
+def list_invoices(skip: int = Pagination.DEFAULT_SKIP, limit: int = Pagination.MAX_LIMIT):
     """Fetch all customer invoices directly from Odoo."""
     try:
         odoo = OdooService()
         return odoo.list_all_invoices(limit=limit, offset=skip)
     except Exception as e:
         logger.error("Failed to list invoices", extra={"error": str(e)})
-        raise HTTPException(status_code=500, detail=f"Odoo error listing invoices: {str(e)}")
+        raise HTTPException(status_code=HttpStatusCodes.INTERNAL_SERVER_ERROR, detail=f"Odoo error listing invoices: {str(e)}")
 
 
 @router.post(
     "/",
     response_model=int,
-    status_code=201,
+    status_code=HttpStatusCodes.CREATED,
     summary="Create a new draft invoice in Odoo",
 )
 def create_invoice(payload: InvoiceCreate):
@@ -53,7 +54,7 @@ def create_invoice(payload: InvoiceCreate):
         return invoice_id
     except Exception as e:
         logger.error("Failed to create invoice", extra={"error": str(e)})
-        raise HTTPException(status_code=500, detail=f"Odoo error creating invoice: {str(e)}")
+        raise HTTPException(status_code=HttpStatusCodes.INTERNAL_SERVER_ERROR, detail=f"Odoo error creating invoice: {str(e)}")
 
 
 @router.get(
@@ -67,7 +68,7 @@ def get_invoice(invoice_id: int):
         odoo = OdooService()
         return odoo.get_invoice(invoice_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=HttpStatusCodes.NOT_FOUND, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to fetch invoice {invoice_id}", extra={"error": str(e)})
         raise HTTPException(status_code=500, detail=str(e))
@@ -114,7 +115,7 @@ def send_invoice_whatsapp(
         
         partner_relation = invoice.get("partner_id")
         if not partner_relation or not isinstance(partner_relation, (list, tuple)):
-            raise HTTPException(status_code=422, detail="Invoice does not have a valid partner linked")
+            raise HTTPException(status_code=HttpStatusCodes.CONFLICT, detail="Invoice does not have a valid partner linked")
             
         partner_id = partner_relation[0]
         partner_name = partner_relation[1]
@@ -134,7 +135,7 @@ def send_invoice_whatsapp(
                 
         if not phone:
             raise HTTPException(
-                status_code=400,
+                status_code=HttpStatusCodes.BAD_REQUEST,
                 detail=f"Could not find a phone number for partner {partner_name} (ID {partner_id})"
             )
             
