@@ -35,14 +35,34 @@ class OdooService:
         if not password:
             raise ValueError("Either ODOO_PASSWORD or ODOO_API_KEY must be set in .env")
 
-        common = xmlrpc.client.ServerProxy(f"{settings.ODOO_URL}/xmlrpc/2/common")
-        self._uid = common.authenticate(settings.ODOO_DB, settings.ODOO_USERNAME, password, {})
-        if not self._uid:
-            raise ConnectionError("Odoo authentication failed — check credentials")
+        # Ensure URL uses HTTPS and has no trailing slash
+        odoo_url = settings.ODOO_URL.rstrip('/')
+        if not odoo_url.startswith('https://'):
+            if odoo_url.startswith('http://'):
+                odoo_url = odoo_url.replace('http://', 'https://', 1)
+            else:
+                odoo_url = f'https://{odoo_url}'
 
-        self._models = xmlrpc.client.ServerProxy(f"{settings.ODOO_URL}/xmlrpc/2/object")
+        try:
+            common = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/common")
+            self._uid = common.authenticate(settings.ODOO_DB, settings.ODOO_USERNAME, password, {})
+            if not self._uid:
+                raise ConnectionError(
+                    f"Odoo authentication failed for user '{settings.ODOO_USERNAME}' on DB '{settings.ODOO_DB}'. "
+                    "Check credentials and database name."
+                )
+        except xmlrpc.client.ProtocolError as e:
+            raise ConnectionError(
+                f"Failed to connect to Odoo at {odoo_url}: {e.errcode} {e.errmsg}. "
+                "Ensure ODOO_URL is correct and uses HTTPS."
+            )
+        except Exception as e:
+            raise ConnectionError(f"Odoo connection failed: {str(e)}")
+
+        self._models = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/object")
         self._db = settings.ODOO_DB
         self._password = password
+        self._uid = self._uid
 
     def _execute(self, model: str, method: str, args: list, kwargs: dict | None = None) -> list:
         return self._models.execute_kw(
@@ -531,3 +551,96 @@ class OdooService:
                 extra={"invoice_name": invoice_data.get("name"), "error": str(e)}
             )
             raise
+
+    def list_all_invoices(self, limit: int = 100, offset: int = 0) -> list[dict]:
+        """Fetch all customer invoices."""
+        try:
+            invoices = self._execute(
+                "account.move",
+                "search_read",
+                [[["move_type", "=", "out_invoice"]]],
+                {
+                    "fields": ["id", "name", "partner_id", "invoice_date", "amount_total", "state", "payment_state"],
+                    "order": "invoice_date DESC",
+                    "limit": limit,
+                    "offset": offset
+                }
+            )
+            return invoices
+        except Exception as e:
+            logger.error("Failed to list all invoices from Odoo", extra={"error": str(e)})
+            raise ValueError(f"Odoo error listing invoices: {str(e)}")
+
+    def get_invoice(self, invoice_id: int) -> dict:
+        """Fetch invoice details including its lines."""
+        try:
+            invoices = self._execute(
+                "account.move",
+                "read",
+                [[invoice_id]],
+                {"fields": ["id", "name", "partner_id", "invoice_date", "amount_total", "state", "payment_state", "invoice_line_ids"]}
+            )
+            if not invoices:
+                raise ValueError(f"Invoice {invoice_id} not found in Odoo")
+            invoice = invoices[0]
+            
+            # Fetch invoice lines details
+            if invoice.get("invoice_line_ids"):
+                lines = self._execute(
+                    "account.move.line",
+                    "read",
+                    [invoice["invoice_line_ids"]],
+                    {"fields": ["id", "name", "quantity", "price_unit", "price_subtotal"]}
+                )
+                invoice["invoice_line_ids"] = lines
+            else:
+                invoice["invoice_line_ids"] = []
+                
+            return invoice
+        except Exception as e:
+            logger.error(f"Failed to fetch invoice {invoice_id} from Odoo", extra={"error": str(e)})
+            raise ValueError(f"Odoo error fetching invoice: {str(e)}")
+
+    def create_invoice(self, partner_id: int, invoice_date: str | None = None, lines: list[dict] = None) -> int:
+        """
+        Create a new draft invoice in Odoo. Returns the created Odoo invoice ID.
+        """
+        if not invoice_date:
+            invoice_date = datetime.now().strftime("%Y-%m-%d")
+            
+        line_commands = []
+        if lines:
+            for line in lines:
+                line_commands.append((0, 0, {
+                    "name": line.get("name", "Product/Service"),
+                    "quantity": line.get("quantity", 1),
+                    "price_unit": line.get("price_unit", 0.0),
+                }))
+                
+        invoice_vals = {
+            "move_type": "out_invoice",
+            "partner_id": partner_id,
+            "invoice_date": invoice_date,
+            "invoice_line_ids": line_commands,
+        }
+        
+        try:
+            invoice_id = self._execute("account.move", "create", [invoice_vals])
+            logger.info("Invoice created in Odoo", extra={"invoice_id": invoice_id})
+            return invoice_id
+        except Exception as e:
+            logger.error("Failed to create invoice in Odoo", extra={"error": str(e)})
+            raise ValueError(f"Odoo error creating invoice: {str(e)}")
+
+    def post_invoice(self, invoice_id: int) -> bool:
+        """
+        Validate/confirm a draft invoice in Odoo.
+        """
+        try:
+            self._execute("account.move", "action_post", [[invoice_id]])
+            logger.info("Invoice posted in Odoo", extra={"invoice_id": invoice_id})
+            return True
+        except Exception as e:
+            logger.error(f"Failed to post invoice {invoice_id} in Odoo", extra={"error": str(e)})
+            raise ValueError(f"Odoo error posting invoice: {str(e)}")
+

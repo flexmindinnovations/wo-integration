@@ -198,25 +198,16 @@ def _build_components(campaign: Campaign, contact: Contact) -> list[dict] | None
     AI extension point: replace this function with an AI service call that uses
     campaign.topic to dynamically generate the parameter values per contact.
     """
-    if campaign.template_components:
-        raw = json.dumps(campaign.template_components)
-        raw = raw.replace("{{contact_name}}", contact.name)
-        raw = raw.replace("{{contact_phone}}", contact.phone)
-        raw = raw.replace("{{contact_email}}", contact.email or "")
-        return json.loads(raw)
+    if not campaign.template_components:
+        logger.warning(
+            "Campaign has no template components configured",
+            extra={"campaign_id": campaign.id, "template": campaign.template_name},
+        )
+        return None
 
-    # Legacy fallback for payment_reminder campaigns created before template_components
-    if campaign.template_name == "payment_reminder":
-        return [
-            {
-                "type": "body",
-                "parameters": [
-                    {"type": "text", "text": contact.name},
-                    {"type": "text", "text": "INR"},
-                    {"type": "text", "text": "0"},
-                    {"type": "text", "text": "Flexmind Innovations"},
-                ],
-            }
-        ]
-
-    return None
+    # Substitute contact-specific placeholders with live data
+    raw = json.dumps(campaign.template_components)
+    raw = raw.replace("{{contact_name}}", contact.name)
+    raw = raw.replace("{{contact_phone}}", contact.phone)
+    raw = raw.replace("{{contact_email}}", contact.email or "")
+    return json.loads(raw)
