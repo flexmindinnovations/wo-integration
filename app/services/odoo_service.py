@@ -35,34 +35,52 @@ class OdooService:
         if not password:
             raise ValueError("Either ODOO_PASSWORD or ODOO_API_KEY must be set in .env")
 
-        # Ensure URL uses HTTPS and has no trailing slash
-        odoo_url = settings.ODOO_URL.rstrip('/')
-        if not odoo_url.startswith('https://'):
-            if odoo_url.startswith('http://'):
-                odoo_url = odoo_url.replace('http://', 'https://', 1)
-            else:
-                odoo_url = f'https://{odoo_url}'
+        # Normalize URL: ensure HTTPS and clean up
+        odoo_url = settings.ODOO_URL.strip()
 
-        try:
-            common = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/common")
-            self._uid = common.authenticate(settings.ODOO_DB, settings.ODOO_USERNAME, password, {})
-            if not self._uid:
-                raise ConnectionError(
-                    f"Odoo authentication failed for user '{settings.ODOO_USERNAME}' on DB '{settings.ODOO_DB}'. "
-                    "Check credentials and database name."
-                )
-        except xmlrpc.client.ProtocolError as e:
+        # Auto-upgrade HTTP to HTTPS
+        if odoo_url.startswith('http://'):
+            odoo_url = odoo_url.replace('http://', 'https://', 1)
+        elif not odoo_url.startswith('https://'):
+            odoo_url = f'https://{odoo_url}'
+
+        # Try with and without trailing slash
+        base_url = odoo_url.rstrip('/')
+        urls_to_try = [base_url, f'{base_url}/']
+
+        last_error = None
+        self._uid = None
+
+        for attempt_url in urls_to_try:
+            try:
+                logger.debug(f"Attempting Odoo connection", extra={"url": attempt_url})
+                common = xmlrpc.client.ServerProxy(f"{attempt_url}/xmlrpc/2/common")
+                uid = common.authenticate(settings.ODOO_DB, settings.ODOO_USERNAME, password, {})
+
+                if uid:
+                    logger.info("Odoo authentication successful", extra={"uid": uid})
+                    self._uid = uid
+                    odoo_url = base_url  # Use URL without trailing slash for consistency
+                    break
+                else:
+                    last_error = "Authentication returned no UID (check username/password)"
+            except xmlrpc.client.ProtocolError as e:
+                last_error = f"ProtocolError {e.errcode}: {e.errmsg}"
+                logger.debug(f"ProtocolError", extra={"url": attempt_url, "code": e.errcode, "msg": e.errmsg})
+            except Exception as e:
+                last_error = str(e)
+                logger.debug(f"Connection error", extra={"url": attempt_url, "error": str(e)})
+
+        if not self._uid:
             raise ConnectionError(
-                f"Failed to connect to Odoo at {odoo_url}: {e.errcode} {e.errmsg}. "
-                "Ensure ODOO_URL is correct and uses HTTPS."
+                f"Odoo authentication failed. Tried: {', '.join(urls_to_try)}. "
+                f"Last error: {last_error}. "
+                f"Verify: ODOO_URL, ODOO_DB={settings.ODOO_DB}, ODOO_USERNAME={settings.ODOO_USERNAME}"
             )
-        except Exception as e:
-            raise ConnectionError(f"Odoo connection failed: {str(e)}")
 
         self._models = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/object")
         self._db = settings.ODOO_DB
         self._password = password
-        self._uid = self._uid
 
     def _execute(self, model: str, method: str, args: list, kwargs: dict | None = None) -> list:
         return self._models.execute_kw(
