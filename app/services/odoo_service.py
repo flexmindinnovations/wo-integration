@@ -1,10 +1,7 @@
 import logging
 import xmlrpc.client
 import requests
-import base64
-import re
 from datetime import datetime
-from io import BytesIO
 from sqlalchemy.orm import Session
 
 from app.config import settings

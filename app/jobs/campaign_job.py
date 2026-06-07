@@ -11,7 +11,7 @@ from app.models.campaign import Campaign, CampaignStatus
 from app.models.campaign_message import CampaignMessage, DeliveryStatus
 from app.models.contact import Contact
 from app.services.whatsapp_service import WhatsAppService
-from app.constants import CampaignDefaults, LogMessages
+from app.constants import CampaignDefaults
 
 logger = logging.getLogger(__name__)
 

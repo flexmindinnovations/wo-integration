@@ -1,5 +1,5 @@
 import logging
-from typing import List, Optional, Any, Dict
+from typing import List, Optional
 from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -8,10 +8,10 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models.contact import Contact
-from app.schemas.invoice import InvoiceCreate, InvoiceOut, InvoiceLineCreate
+from app.schemas.invoice import InvoiceCreate, InvoiceOut
 from app.services.odoo_service import OdooService
 from app.services.whatsapp_service import WhatsAppService
-from app.constants import Pagination, HttpStatusCodes, InvoiceDefaults
+from app.constants import Pagination, HttpStatusCodes
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/invoices", tags=["Invoices"])
