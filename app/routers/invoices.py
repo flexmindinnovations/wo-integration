@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db
 from app.models.contact import Contact
 from app.schemas.invoice import InvoiceCreate, InvoiceOut, InvoiceLineCreate
