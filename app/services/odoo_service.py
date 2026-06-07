@@ -2,6 +2,8 @@ import logging
 import xmlrpc.client
 import requests
 from datetime import datetime
+from io import BytesIO
+from typing import Any, Dict, List
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -18,14 +20,17 @@ logger = logging.getLogger(__name__)
 
 # Try to import reportlab for PDF generation fallback
 try:
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter as reportlab_letter
+    from reportlab.lib import colors as reportlab_colors
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch
+    from reportlab.lib.units import inch as reportlab_inch
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
+    reportlab_letter = None
+    reportlab_colors = None
+    reportlab_inch = None
     logger.warning("reportlab not installed - PDF generation fallback will not be available")
 
 
@@ -87,12 +92,12 @@ class OdooService:
         self._db = settings.ODOO_DB
         self._password = password
 
-    def _execute(self, model: str, method: str, args: list, kwargs: dict | None = None) -> list:
+    def _execute(self, model: str, method: str, args: List[Any], kwargs: Dict[str, Any] | None = None) -> Any:
         return self._models.execute_kw(
             self._db, self._uid, self._password, model, method, args, kwargs or {}
         )
 
-    def fetch_partners(self) -> list[dict]:
+    def fetch_partners(self) -> List[Dict[str, Any]]:
         return self._execute(
             OdooModels.RES_PARTNER,
             OdooActions.SEARCH_READ,
@@ -149,7 +154,7 @@ class OdooService:
         logger.info("Contact updated in Odoo", extra={"partner_id": partner_id, "fields": list(update_data.keys())})
         return True
 
-    def sync_contacts(self, db: Session) -> dict:
+    def sync_contacts(self, db: Session) -> Dict[str, Any]:
         partners = self.fetch_partners()
         created = updated = skipped = 0
 
@@ -199,7 +204,7 @@ class OdooService:
         )
         return {"created": created, "updated": updated, "skipped": skipped, "total": len(partners)}
 
-    def fetch_customer_invoices(self, partner_id: int, limit: int = ApiDefaults.INVOICE_LIMIT) -> list[dict]:
+    def fetch_customer_invoices(self, partner_id: int, limit: int = ApiDefaults.INVOICE_LIMIT) -> List[Dict[str, Any]]:
         """Fetch unpaid/open invoices for a customer. Returns empty list if model unavailable."""
         # Odoo 19+ uses account.move without due_date field, older versions may have it
         # Try multiple field combinations for compatibility across versions
@@ -260,7 +265,7 @@ class OdooService:
         )
         return []
 
-    def fetch_customer_orders(self, partner_id: int, limit: int = 5) -> list[dict]:
+    def fetch_customer_orders(self, partner_id: int, limit: int = ApiDefaults.ORDER_LIMIT) -> List[Dict[str, Any]]:
         """Fetch recent sales orders for a customer. Returns empty list if model unavailable."""
         try:
             orders = self._execute(
@@ -288,7 +293,7 @@ class OdooService:
             )
             return []
 
-    def fetch_customer_payments(self, partner_id: int, limit: int = ApiDefaults.PAYMENT_LIMIT) -> list[dict]:
+    def fetch_customer_payments(self, partner_id: int, limit: int = ApiDefaults.PAYMENT_LIMIT) -> List[Dict[str, Any]]:
         """Fetch recent payments from a customer. Returns empty list if model unavailable."""
         try:
             payments = self._execute(
@@ -321,7 +326,7 @@ class OdooService:
             )
             return []
 
-    def fetch_customer_context(self, partner_id: int) -> dict:
+    def fetch_customer_context(self, partner_id: int) -> Dict[str, Any]:
         """Fetch complete customer business context for AI replies. Gracefully handles missing models."""
         try:
             partners = self._execute(
@@ -482,7 +487,7 @@ class OdooService:
             )
             raise
 
-    def generate_invoice_pdf(self, invoice_data: dict) -> bytes:
+    def generate_invoice_pdf(self, invoice_data: Dict[str, Any]) -> bytes:
         """
         Generate a PDF from invoice data as a fallback when Odoo PDF fetch fails.
 
@@ -587,7 +592,7 @@ class OdooService:
             )
             raise
 
-    def list_all_invoices(self, limit: int = Pagination.DEFAULT_LIMIT, offset: int = ApiDefaults.DEFAULT_OFFSET) -> list[dict]:
+    def list_all_invoices(self, limit: int = Pagination.DEFAULT_LIMIT, offset: int = ApiDefaults.DEFAULT_OFFSET) -> List[Dict[str, Any]]:
         """Fetch all customer invoices."""
         try:
             invoices = self._execute(
@@ -614,7 +619,7 @@ class OdooService:
             logger.error("Failed to list all invoices from Odoo", extra={"error": str(e)})
             raise ValueError(f"Odoo error listing invoices: {str(e)}")
 
-    def get_invoice(self, invoice_id: int) -> dict:
+    def get_invoice(self, invoice_id: int) -> Dict[str, Any]:
         """Fetch invoice details including its lines."""
         try:
             invoices = self._execute(
@@ -644,7 +649,7 @@ class OdooService:
             logger.error(f"Failed to fetch invoice {invoice_id} from Odoo", extra={"error": str(e)})
             raise ValueError(f"Odoo error fetching invoice: {str(e)}")
 
-    def create_invoice(self, partner_id: int, invoice_date: str | None = None, lines: list[dict] = None) -> int:
+    def create_invoice(self, partner_id: int, invoice_date: str | None = None, lines: List[Dict[str, Any]] | None = None) -> int:
         """
         Create a new draft invoice in Odoo. Returns the created Odoo invoice ID.
         """

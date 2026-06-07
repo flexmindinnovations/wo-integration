@@ -96,6 +96,8 @@ class OdooFieldsPayment:
     NAME = "name"
     DATE = "date"
     AMOUNT = "amount"
+    PARTNER_ID = "partner_id"
+    STATE = "state"
 
 
 # ============================================================================
