@@ -18,19 +18,16 @@ from app.constants import (
 
 logger = logging.getLogger(__name__)
 
-# Try to import reportlab for PDF generation fallback
+# Check if reportlab is available
 try:
-    from reportlab.lib.pagesizes import letter as reportlab_letter
-    from reportlab.lib import colors as reportlab_colors
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch as reportlab_inch
+    import reportlab.lib.pagesizes  # noqa: F401
+    import reportlab.lib.colors  # noqa: F401
+    import reportlab.platypus  # noqa: F401
+    import reportlab.lib.styles  # noqa: F401
+    import reportlab.lib.units  # noqa: F401
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
-    reportlab_letter = None
-    reportlab_colors = None
-    reportlab_inch = None
     logger.warning("reportlab not installed - PDF generation fallback will not be available")
 
 
@@ -501,12 +498,12 @@ class OdooService:
             raise ImportError("reportlab is not installed - PDF generation not available")
 
         try:
-            from reportlab.lib.pagesizes import letter
-            from reportlab.lib import colors
-            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.lib.units import inch
-            from reportlab.lib.enums import TA_CENTER
+            from reportlab.lib.pagesizes import letter  # type: ignore
+            from reportlab.lib import colors  # type: ignore
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer  # type: ignore
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle  # type: ignore
+            from reportlab.lib.units import inch  # type: ignore
+            from reportlab.lib.enums import TA_CENTER  # type: ignore
 
             logger.info(
                 "Generating invoice PDF from data",
