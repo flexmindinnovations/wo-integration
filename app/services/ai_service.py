@@ -1,6 +1,6 @@
 import logging
 from sqlalchemy.orm import Session
-import google.generativeai as genai
+from google import genai
 
 from app.config import settings
 from app.models.conversation_message import ConversationMessage
@@ -19,8 +19,7 @@ _CONTEXT_WINDOW = 10
 
 class AiService:
     def __init__(self) -> None:
-        genai.configure(api_key=settings.GOOGLE_GEMINI_API_KEY)
-        self._model = genai.GenerativeModel("gemini-2.5-flash")
+        self._client = genai.Client(api_key=settings.GOOGLE_GEMINI_API_KEY)
 
     def generate_reply(self, phone: str, db: Session) -> str:
         """
@@ -49,14 +48,16 @@ class AiService:
                 "parts": [{"text": msg.content}]
             })
 
-        # Start a chat session with system instruction
-        chat = self._model.start_chat(history=messages)
+        # Build content for the API call
+        contents = messages + [{"role": "user", "parts": [{"text": _SYSTEM_PROMPT}]}]
 
-        response = chat.send_message(
-            _SYSTEM_PROMPT,
-            generation_config=genai.types.GenerationConfig(
-                max_output_tokens=1024,
-            ),
+        # Call Gemini API with new google.genai package
+        response = self._client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config={
+                "max_output_tokens": 1024,
+            }
         )
 
         reply: str = response.text
@@ -95,10 +96,15 @@ class AiService:
 
         system_prompt = self._build_context_aware_prompt(contact, odoo_context)
 
-        chat = self._model.start_chat(history=messages)
-        response = chat.send_message(
-            system_prompt,
-            generation_config=genai.types.GenerationConfig(max_output_tokens=1024),
+        # Build content with system prompt
+        contents = messages + [{"role": "user", "parts": [{"text": system_prompt}]}]
+
+        response = self._client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=contents,
+            config={
+                "max_output_tokens": 1024,
+            }
         )
 
         reply: str = response.text
