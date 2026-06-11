@@ -12,7 +12,10 @@ logger = logging.getLogger(__name__)
 _SYSTEM_PROMPT = (
     "You are a helpful, friendly assistant communicating via WhatsApp. "
     "Keep responses concise and conversational. "
-    "Answer questions clearly and helpfully. "
+    "Answer exactly what was asked — nothing more. "
+    "If the customer asks for a count, reply with just the count. "
+    "If they ask for details, give details. "
+    "Do not volunteer information they did not request. "
     "If you are unsure about something, say so honestly."
 )
 
@@ -152,7 +155,7 @@ class AiService:
         # Case 1: Odoo access succeeded and has data
         if access_success and has_any_business_data:
             if has_invoices:
-                prompt += f"📋 OUTSTANDING INVOICES ({len(odoo_context['invoices'])} total):\n"
+                prompt += f"OUTSTANDING INVOICES ({len(odoo_context['invoices'])} total):\n"
                 for inv in odoo_context["invoices"][:5]:
                     due = inv.get("due_date") or inv.get("invoice_date", "N/A")
                     amount = inv.get("amount_total", 0)
@@ -160,9 +163,6 @@ class AiService:
                     name = inv.get("name", "Unknown")
                     prompt += f"  • {name}: ₹{amount:.2f} (Date: {due}, Status: {state})\n"
                 prompt += "\n"
-
-                # Note about PDF being sent
-                prompt += "✅ PDF invoice(s) will be sent to you in this chat.\n\n"
 
             if has_orders:
                 prompt += "Recent Orders:\n"
@@ -181,12 +181,14 @@ class AiService:
 
             prompt += (
                 "Use this account information to provide personalized, helpful responses. "
-                "Be concise for WhatsApp (short paragraphs). "
-                "When the customer asks about invoices, orders, or payments, refer to the details above. "
-                "If they ask 'what invoices do I have', list the outstanding invoices shown above. "
-                "Do NOT say 'I can't send you the PDF' - the PDF invoice(s) are being sent in this chat. "
-                "Offer solutions based on their account status. "
-                "If you need more information, ask politely. "
+                "Be concise for WhatsApp — short paragraphs, no unnecessary filler. "
+                "IMPORTANT — match your response exactly to what was asked:\n"
+                "  • If asked for a count (e.g. 'how many invoices'), reply with just the number and nothing else.\n"
+                "  • If asked for a summary or list, list the invoices briefly.\n"
+                "  • If asked for a PDF or to send/share a document, mention that the PDF is being sent.\n"
+                "  • Do NOT mention PDFs unless the customer explicitly asked for one.\n"
+                "  • Do NOT add extra details, offers, or suggestions unless the customer asked.\n"
+                "Offer solutions based on their account status only if they ask. "
                 "If unsure, be honest."
             )
         # Case 2: Odoo access succeeded but no data found

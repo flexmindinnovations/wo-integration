@@ -9,7 +9,11 @@ from app.services.ws_manager import manager
 
 logger = logging.getLogger(__name__)
 
+# Any of these means the message is about invoices/billing (used to enrich AI context)
 _INVOICE_KEYWORDS = {"invoice", "bill", "pdf", "document", "payment"}
+
+# User must include one of these to actually trigger a PDF send
+_PDF_SEND_KEYWORDS = {"pdf", "send", "share", "document", "attach", "download", "view"}
 
 
 def serialize_message(msg: ConversationMessage) -> dict:
@@ -59,9 +63,10 @@ async def process_ai_reply(phone: str, text_body: str) -> None:
         else:
             logger.warning("Contact not linked to Odoo or not found", extra={"phone": phone})
 
-        # Determine invoice eligibility BEFORE generating AI reply so we can
-        # substitute a structured summary when the AI quota is exhausted.
-        is_invoice_request = any(kw in text_body.lower() for kw in _INVOICE_KEYWORDS)
+        query = text_body.lower()
+        is_invoice_request = any(kw in query for kw in _INVOICE_KEYWORDS)
+        # PDF send requires explicit intent — "how many" / "just count" should NOT trigger
+        should_send_pdf = is_invoice_request and any(kw in query for kw in _PDF_SEND_KEYWORDS)
         invoices = odoo_context.get("invoices", []) if odoo_context else []
         has_invoices = bool(invoices)
 
@@ -70,8 +75,7 @@ async def process_ai_reply(phone: str, text_body: str) -> None:
 
         if is_fallback:
             if is_invoice_request and has_invoices:
-                # Replace generic "unavailable" message with a useful invoice summary
-                ai_reply = _build_invoice_reply(contact, invoices[:3])
+                ai_reply = _build_invoice_reply(contact, invoices[:3], text_body)
             else:
                 ai_reply = "Sorry, I encountered an error. Please try again shortly."
 
@@ -94,8 +98,8 @@ async def process_ai_reply(phone: str, text_body: str) -> None:
         except Exception as wa_err:
             logger.warning("WhatsApp send failed for AI reply", extra={"phone": phone, "error": str(wa_err)})
 
-        # ── Invoice PDFs — independent of AI success ──────────────────────────
-        if is_invoice_request and has_invoices and contact and contact.odoo_partner_id:
+        # ── Invoice PDFs — only when user explicitly asked for them ──────────
+        if should_send_pdf and has_invoices and contact and contact.odoo_partner_id:
             await _send_invoices_and_record(phone, invoices, db)
 
     except Exception:
@@ -128,11 +132,17 @@ def _safe_generate_reply(phone, db, contact, odoo_context) -> tuple[str, bool]:
         return "", True
 
 
-def _build_invoice_reply(contact, invoices: list) -> str:
+def _build_invoice_reply(contact, invoices: list, user_query: str = "") -> str:
     """Build a structured invoice summary message when the AI is unavailable."""
     first_name = contact.name.split()[0] if (contact and contact.name) else "there"
     count = len(invoices)
     noun = "invoice" if count == 1 else "invoices"
+    query = user_query.lower()
+
+    # Count-only query — return a single concise line
+    is_count_query = any(kw in query for kw in ("how many", "count", "number of", "total invoice"))
+    if is_count_query:
+        return f"You have *{count}* outstanding {noun}."
 
     lines = []
     for inv in invoices:
@@ -142,19 +152,22 @@ def _build_invoice_reply(contact, invoices: list) -> str:
         status = inv.get("payment_state", "unknown").replace("_", " ")
         lines.append(f"• *{name}* for *₹{amount:,.2f}* (Date: {date}, Status: {status})")
 
+    wants_pdf = any(kw in query for kw in _PDF_SEND_KEYWORDS)
     inv_names = ", ".join(f"*{inv.get('name', 'Invoice')}*" for inv in invoices)
-    pdf_line = (
-        f"The PDF for invoice {inv_names} is being sent to you in this chat now."
-        if count == 1
-        else f"The PDFs for {inv_names} are being sent to you in this chat now."
-    )
+    pdf_line = ""
+    if wants_pdf:
+        pdf_line = (
+            f"\nThe PDF for invoice {inv_names} is being sent to you in this chat now."
+            if count == 1
+            else f"\nThe PDFs for {inv_names} are being sent to you in this chat now."
+        )
 
     return (
         f"Yes, {first_name}, I can definitely help you with that!\n\n"
         f"I see you have {count} outstanding {noun}:\n"
         + "\n".join(lines)
-        + f"\n\n{pdf_line}\n\n"
-        "You can pay this invoice securely on our website, or let me know if you need assistance with other payment methods."
+        + pdf_line
+        + ("\n\nYou can pay securely on our website, or let me know if you need assistance with other payment methods." if wants_pdf else "")
     )
 
 
