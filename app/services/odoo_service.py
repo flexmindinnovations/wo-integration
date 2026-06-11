@@ -377,118 +377,138 @@ class OdooService:
 
     def get_invoice_pdf(self, invoice_id: int) -> bytes:
         """
-        Fetch invoice PDF from Odoo via custom API endpoint with token authentication.
+        Fetch the official Odoo invoice PDF. Tries three strategies in order:
+          1. Custom module API  (/api/invoice/pdf/{id}?token=...)
+          2. HTTP session auth  (/web/session/authenticate → /report/pdf/...)
+          3. XML-RPC            (ir.actions.report.render_qweb_pdf)
 
-        This uses the custom 'whatsapp_invoice_api' module installed in Odoo,
-        which provides secure token-based PDF retrieval.
-
-        Args:
-            invoice_id: The Odoo invoice ID
-
-        Returns:
-            PDF bytes that can be uploaded to WhatsApp
+        Raises ValueError if all three fail.
         """
+        errors: list[str] = []
+
+        # ── Strategy 1: custom module API ────────────────────────────────────
         try:
-            # Use custom API endpoint with token authentication
-            api_token = settings.ODOO_API_KEY
-            api_url = f"{settings.ODOO_URL}/api/invoice/pdf/{invoice_id}"
-
-            logger.info(
-                "Fetching invoice PDF via custom Odoo API endpoint",
-                extra={"invoice_id": invoice_id, "endpoint": "/api/invoice/pdf/"}
-            )
-
-            response = requests.get(
-                api_url,
-                params={"token": api_token},
-                timeout=ApiTimeouts.ODOO_PDF_FETCH,
-                verify=True,
-                headers={"Accept": "application/pdf"}
-            )
-
-            # Handle different error cases
-            if response.status_code == 401:
-                logger.error(
-                    "API authentication failed - token is invalid or expired",
-                    extra={"invoice_id": invoice_id}
-                )
-                raise ValueError(
-                    "Odoo API token invalid. Ensure the custom module is installed "
-                    "and the API token is correct."
-                )
-
-            if response.status_code == 404:
-                logger.warning(
-                    "Invoice not found in Odoo",
-                    extra={"invoice_id": invoice_id}
-                )
-                raise ValueError(f"Invoice {invoice_id} not found in Odoo")
-
-            if response.status_code == 400:
-                logger.warning(
-                    "Bad request to API",
-                    extra={"invoice_id": invoice_id, "response": response.text}
-                )
-                raise ValueError(f"Invalid invoice request: {response.text}")
-
-            if response.status_code != 200:
-                logger.error(
-                    "Unexpected API response",
-                    extra={
-                        "invoice_id": invoice_id,
-                        "status": response.status_code,
-                        "response": response.text[:200]
-                    }
-                )
-                raise ValueError(
-                    f"Failed to fetch PDF from Odoo API (status {response.status_code})"
-                )
-
-            # Verify it's a valid PDF
-            if not response.content.startswith(b"%PDF"):
-                logger.error(
-                    "Response is not a valid PDF",
-                    extra={"invoice_id": invoice_id, "first_bytes": response.content[:20]}
-                )
-                raise ValueError("Odoo returned invalid PDF content")
-
-            logger.info(
-                "Invoice PDF fetched successfully from Odoo API",
-                extra={
-                    "invoice_id": invoice_id,
-                    "size": len(response.content),
-                    "source": "odoo_api"
-                }
-            )
-
-            return response.content
-
-        except requests.exceptions.ConnectionError as e:
-            logger.error(
-                "Failed to connect to Odoo API",
-                extra={"invoice_id": invoice_id, "error": str(e)}
-            )
-            raise ValueError(f"Cannot reach Odoo instance: {str(e)}")
-
-        except requests.exceptions.Timeout:
-            logger.error(
-                "Odoo API request timed out",
-                extra={"invoice_id": invoice_id}
-            )
-            raise ValueError("Odoo API request timed out")
-
+            return self._fetch_pdf_custom_api(invoice_id)
         except Exception as e:
-            logger.error(
-                "Failed to fetch invoice PDF from Odoo API",
-                extra={"invoice_id": invoice_id, "error": str(e)}
-            )
+            errors.append(f"custom_api: {e}")
+            logger.debug("Custom API PDF fetch failed", extra={"invoice_id": invoice_id, "error": str(e)})
 
-            # Fallback to local PDF generation if API fails
-            logger.info(
-                "Falling back to local PDF generation",
-                extra={"invoice_id": invoice_id}
-            )
-            raise
+        # ── Strategy 2: standard Odoo report via HTTP session ─────────────────
+        try:
+            return self._fetch_pdf_http_session(invoice_id)
+        except Exception as e:
+            errors.append(f"http_session: {e}")
+            logger.debug("HTTP session PDF fetch failed", extra={"invoice_id": invoice_id, "error": str(e)})
+
+        # ── Strategy 3: XML-RPC render_qweb_pdf (Odoo 14–17) ─────────────────
+        try:
+            return self._fetch_pdf_xmlrpc(invoice_id)
+        except Exception as e:
+            errors.append(f"xmlrpc: {e}")
+            logger.debug("XML-RPC PDF fetch failed", extra={"invoice_id": invoice_id, "error": str(e)})
+
+        raise ValueError(
+            f"All Odoo PDF fetch strategies failed for invoice {invoice_id}: "
+            + " | ".join(errors)
+        )
+
+    # ── PDF fetch helpers ─────────────────────────────────────────────────────
+
+    def _fetch_pdf_custom_api(self, invoice_id: int) -> bytes:
+        """Strategy 1: custom whatsapp_invoice_api module endpoint."""
+        api_token = settings.ODOO_API_KEY
+        if not api_token:
+            raise ValueError("ODOO_API_KEY not set — custom API unavailable")
+        url = f"{settings.ODOO_URL}/api/invoice/pdf/{invoice_id}"
+        resp = requests.get(
+            url,
+            params={"token": api_token},
+            headers={"Accept": "application/pdf"},
+            timeout=ApiTimeouts.ODOO_PDF_FETCH,
+        )
+        if resp.status_code != 200:
+            raise ValueError(f"Custom API returned HTTP {resp.status_code}: {resp.text[:200]}")
+        if not resp.content.startswith(b"%PDF"):
+            raise ValueError("Custom API response is not a valid PDF")
+        logger.info("Invoice PDF fetched via custom API", extra={"invoice_id": invoice_id, "size": len(resp.content)})
+        return resp.content
+
+    def _fetch_pdf_http_session(self, invoice_id: int) -> bytes:
+        """
+        Strategy 2: standard Odoo report URL.
+        POST /web/session/authenticate  →  GET /report/pdf/account.report_invoice/{id}
+        Works with any Odoo version that has the accounting module.
+        """
+        password = settings.ODOO_PASSWORD or settings.ODOO_API_KEY
+        session = requests.Session()
+
+        auth_resp = session.post(
+            f"{settings.ODOO_URL}/web/session/authenticate",
+            json={
+                "jsonrpc": "2.0", "method": "call", "id": 1,
+                "params": {
+                    "db": settings.ODOO_DB,
+                    "login": settings.ODOO_USERNAME,
+                    "password": password,
+                },
+            },
+            timeout=ApiTimeouts.ODOO_PDF_FETCH,
+        )
+        auth_data = auth_resp.json()
+        uid = (auth_data.get("result") or {}).get("uid")
+        if not uid:
+            msg = (auth_data.get("error") or {}).get("data", {}).get("message", "auth failed")
+            raise ValueError(f"Session authenticate failed: {msg}")
+
+        pdf_resp = session.get(
+            f"{settings.ODOO_URL}/report/pdf/account.report_invoice/{invoice_id}",
+            timeout=ApiTimeouts.ODOO_PDF_FETCH,
+        )
+        if pdf_resp.status_code != 200:
+            raise ValueError(f"Report download returned HTTP {pdf_resp.status_code}")
+        if not pdf_resp.content.startswith(b"%PDF"):
+            raise ValueError("Report response is not a valid PDF")
+
+        logger.info("Invoice PDF fetched via HTTP session", extra={"invoice_id": invoice_id, "size": len(pdf_resp.content)})
+        return pdf_resp.content
+
+    def _fetch_pdf_xmlrpc(self, invoice_id: int) -> bytes:
+        """
+        Strategy 3: XML-RPC ir.actions.report.render_qweb_pdf.
+        Works on Odoo 14–17. May be restricted on Odoo 18+.
+        """
+        import base64
+
+        reports = self._execute(
+            "ir.actions.report",
+            "search_read",
+            [[["report_name", "=", "account.report_invoice"]]],
+            {"fields": ["id"], "limit": 1},
+        )
+        if not reports:
+            raise ValueError("account.report_invoice action not found in Odoo")
+
+        report_id = reports[0]["id"]
+        result = self._execute(
+            "ir.actions.report",
+            "render_qweb_pdf",
+            [[report_id], [invoice_id]],
+        )
+
+        if not isinstance(result, (list, tuple)) or not result:
+            raise ValueError(f"Unexpected render_qweb_pdf result type: {type(result)}")
+
+        raw = result[0]
+        if isinstance(raw, bytes):
+            pdf_bytes = raw if raw.startswith(b"%PDF") else base64.b64decode(raw)
+        else:
+            pdf_bytes = base64.b64decode(raw.encode() if isinstance(raw, str) else raw)
+
+        if not pdf_bytes.startswith(b"%PDF"):
+            raise ValueError("XML-RPC render_qweb_pdf did not return a valid PDF")
+
+        logger.info("Invoice PDF fetched via XML-RPC", extra={"invoice_id": invoice_id, "size": len(pdf_bytes)})
+        return pdf_bytes
 
     @staticmethod
     def _register_unicode_font() -> tuple[str, str]:
@@ -525,11 +545,43 @@ class OdooService:
             pass
         return "Helvetica", "Helvetica-Bold"
 
+    @staticmethod
+    def _amount_to_words(amount: float) -> str:
+        """Convert a numeric amount to English words (Indian number system)."""
+        ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight",
+                "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen",
+                "Sixteen", "Seventeen", "Eighteen", "Nineteen"]
+        tens_w = ["", "", "Twenty", "Thirty", "Forty", "Fifty",
+                  "Sixty", "Seventy", "Eighty", "Ninety"]
+
+        def say(n: int) -> str:
+            if n == 0:
+                return ""
+            if n < 20:
+                return ones[n]
+            if n < 100:
+                return (tens_w[n // 10] + " " + ones[n % 10]).strip()
+            if n < 1_000:
+                return (ones[n // 100] + " Hundred " + say(n % 100)).strip()
+            if n < 1_00_000:
+                return (say(n // 1_000) + " Thousand " + say(n % 1_000)).strip()
+            if n < 1_00_00_000:
+                return (say(n // 1_00_000) + " Lakh " + say(n % 1_00_000)).strip()
+            return (say(n // 1_00_00_000) + " Crore " + say(n % 1_00_00_000)).strip()
+
+        int_part = int(amount)
+        paise = round((amount - int_part) * 100)
+        words = say(int_part) if int_part > 0 else "Zero"
+        result = words + " Rupees"
+        if paise:
+            result += " and " + say(paise) + " Paise"
+        return result
+
     def generate_invoice_pdf(self, invoice_data: Dict[str, Any]) -> bytes:
         """
-        Generate a proper invoice PDF with header, Bill To, line items table, and totals.
-        Line items are rendered when invoice_line_ids is present (from get_invoice);
-        otherwise only the totals block is shown (context from fetch_customer_invoices).
+        Generate a clean invoice PDF matching Odoo's default print layout:
+        company / customer → large invoice heading → date fields →
+        line items → totals + amount in words → footer.
         """
         if not REPORTLAB_AVAILABLE:
             raise ImportError("reportlab is not installed - PDF generation not available")
@@ -547,63 +599,63 @@ class OdooService:
             font_reg, font_bold = self._register_unicode_font()
             rupee = InvoiceDefaults.RUPEE_SYMBOL
 
-            # ── Colours ──────────────────────────────────────────────────────
-            BRAND_BLUE  = colors.HexColor("#1A3C6E")
-            ACCENT_BLUE = colors.HexColor("#2563EB")
-            LIGHT_BLUE  = colors.HexColor("#EBF2FF")
-            ROW_ALT     = colors.HexColor("#F7F9FC")
-            BORDER_GREY = colors.HexColor("#CBD5E1")
-            TEXT_DARK   = colors.HexColor("#1E293B")
-            TEXT_MUTED  = colors.HexColor("#64748B")
-            GREEN       = colors.HexColor("#16A34A")
-            ORANGE      = colors.HexColor("#D97706")
-            RED         = colors.HexColor("#DC2626")
+            # ── Colours (Odoo-style palette) ──────────────────────────────────
+            C_DARK   = colors.HexColor("#1A1A2E")   # near-black body text
+            C_MUTED  = colors.HexColor("#64748B")   # grey labels
+            C_ACCENT = colors.HexColor("#875A7B")   # Odoo purple – customer name
+            C_TEAL   = colors.HexColor("#017E7C")   # Odoo teal – headings / rule
+            C_ORANGE = colors.HexColor("#D97706")   # total amount highlight
+            C_RULE   = colors.HexColor("#CBD5E1")   # light divider
+            C_ALT    = colors.HexColor("#F8F9FA")   # alternate row tint
 
             # ── Page setup ───────────────────────────────────────────────────
             pdf_buffer = BytesIO()
             doc = SimpleDocTemplate(
                 pdf_buffer,
                 pagesize=A4,
-                leftMargin=15 * mm,
-                rightMargin=15 * mm,
-                topMargin=12 * mm,
-                bottomMargin=15 * mm,
+                leftMargin=18 * mm, rightMargin=18 * mm,
+                topMargin=14 * mm,  bottomMargin=14 * mm,
             )
-            page_w = A4[0] - 30 * mm
+            page_w = A4[0] - 36 * mm
 
             # ── Styles ───────────────────────────────────────────────────────
             def sty(name, **kw):
                 kw.setdefault("fontName", font_reg)
                 return ParagraphStyle(name, **kw)
 
-            s_company = sty("Co",   fontSize=20, textColor=colors.white, fontName=font_bold, leading=24)
-            s_inv_lbl = sty("ILbl", fontSize=9,  textColor=colors.HexColor("#93C5FD"), alignment=TA_RIGHT)
-            s_inv_num = sty("INum", fontSize=16, textColor=colors.white, fontName=font_bold, alignment=TA_RIGHT, leading=20)
-            s_section = sty("Sec",  fontSize=8,  textColor=TEXT_MUTED, leading=11)
-            s_label   = sty("Lbl",  fontSize=9,  textColor=TEXT_MUTED, leading=13)
-            s_value   = sty("Val",  fontSize=10, textColor=TEXT_DARK,  fontName=font_bold, leading=14)
-            s_body    = sty("Bod",  fontSize=10, textColor=TEXT_DARK,  leading=14)
-            s_th      = sty("TH",   fontSize=10, textColor=colors.white, fontName=font_bold, leading=13)
-            s_td      = sty("TD",   fontSize=9,  textColor=TEXT_DARK, leading=13)
-            s_td_r    = sty("TDR",  fontSize=9,  textColor=TEXT_DARK, alignment=TA_RIGHT, leading=13)
-            s_td_c    = sty("TDC",  fontSize=9,  textColor=TEXT_DARK, alignment=TA_CENTER, leading=13)
-            s_tot_l   = sty("TotL", fontSize=10, textColor=TEXT_DARK, fontName=font_bold, leading=14)
-            s_tot_r   = sty("TotR", fontSize=10, textColor=TEXT_DARK, fontName=font_bold, alignment=TA_RIGHT, leading=14)
-            s_bal_l   = sty("BalL", fontSize=12, textColor=colors.white, fontName=font_bold, leading=16)
-            s_bal_r   = sty("BalR", fontSize=12, textColor=colors.white, fontName=font_bold, alignment=TA_RIGHT, leading=16)
-            s_footer  = sty("Ftr",  fontSize=8,  textColor=TEXT_MUTED, alignment=TA_CENTER, leading=12)
+            s_company   = sty("Co",   fontSize=16, fontName=font_bold, textColor=C_DARK,   leading=20)
+            s_cust_lbl  = sty("CL",   fontSize=8,  textColor=C_MUTED,  leading=10,  alignment=TA_RIGHT)
+            s_cust_name = sty("CN",   fontSize=12, fontName=font_bold, textColor=C_ACCENT, leading=15, alignment=TA_RIGHT)
+            s_inv_head  = sty("IH",   fontSize=22, fontName=font_bold, textColor=C_DARK,   leading=28)
+            s_date_lbl  = sty("DL",   fontSize=9,  fontName=font_bold, textColor=C_DARK,   leading=12)
+            s_date_val  = sty("DV",   fontSize=10, textColor=C_DARK,   leading=14)
+            s_col_hdr   = sty("CH",   fontSize=9,  fontName=font_bold, textColor=C_TEAL,   leading=12)
+            s_col_hdr_r = sty("CHR",  fontSize=9,  fontName=font_bold, textColor=C_TEAL,   leading=12, alignment=TA_RIGHT)
+            s_col_hdr_c = sty("CHC",  fontSize=9,  fontName=font_bold, textColor=C_TEAL,   leading=12, alignment=TA_CENTER)
+            s_td        = sty("TD",   fontSize=9,  textColor=C_DARK,   leading=13)
+            s_td_r      = sty("TDR",  fontSize=9,  textColor=C_DARK,   leading=13, alignment=TA_RIGHT)
+            s_td_c      = sty("TDC",  fontSize=9,  textColor=C_DARK,   leading=13, alignment=TA_CENTER)
+            s_note      = sty("NT",   fontSize=9,  textColor=C_TEAL,   leading=13)
+            s_note_val  = sty("NV",   fontSize=9,  textColor=C_DARK,   leading=13)
+            s_tot_lbl   = sty("TL",   fontSize=10, fontName=font_bold, textColor=C_DARK,   leading=14, alignment=TA_RIGHT)
+            s_tot_val   = sty("TV",   fontSize=10, fontName=font_bold, textColor=C_ORANGE, leading=14, alignment=TA_RIGHT)
+            s_words_lbl = sty("WL",   fontSize=9,  fontName=font_bold, textColor=C_DARK,   leading=12, alignment=TA_RIGHT)
+            s_words_val = sty("WV",   fontSize=9,  textColor=C_MUTED,  leading=12, alignment=TA_RIGHT)
+            s_footer    = sty("Ftr",  fontSize=8,  textColor=C_MUTED,  leading=11, alignment=TA_CENTER)
 
             # ── Extract data ─────────────────────────────────────────────────
             invoice_number = invoice_data.get("name", "N/A")
             invoice_date   = str(invoice_data.get("invoice_date") or "N/A")
-            due_date       = str(invoice_data.get("due_date") or invoice_data.get("invoice_date") or "N/A")
+            due_date       = str(
+                invoice_data.get("invoice_date_due") or
+                invoice_data.get("due_date") or
+                invoice_data.get("invoice_date") or "N/A"
+            )
             payment_state  = invoice_data.get("payment_state", "not_paid")
-            payment_label  = payment_state.replace("_", " ").title()
             amount_total   = float(invoice_data.get("amount_total", 0) or 0)
-            status_color   = GREEN if payment_state == "paid" else (ORANGE if payment_state == "partial" else RED)
             company_name   = getattr(settings, "COMPANY_NAME", "Flexmind Innovations")
+            support_email  = getattr(settings, "COMPANY_EMAIL", "support@flexmindinnovations.com")
 
-            # partner_id is [id, "Name"] from XML-RPC or absent in context invoices
             raw_partner = invoice_data.get("partner_id", "")
             if isinstance(raw_partner, (list, tuple)) and len(raw_partner) >= 2:
                 partner_name = str(raw_partner[1])
@@ -612,179 +664,179 @@ class OdooService:
             else:
                 partner_name = "Customer"
 
-            # Line items — only present when invoice_data comes from get_invoice()
+            # Payment term (optional — Many2one returns [id, name])
+            raw_term = invoice_data.get("invoice_payment_term_id")
+            payment_term = str(raw_term[1]) if isinstance(raw_term, (list, tuple)) and len(raw_term) >= 2 else ""
+            payment_ref  = (
+                invoice_data.get("payment_reference") or
+                invoice_data.get("ref") or
+                invoice_number
+            )
+
             raw_lines = invoice_data.get("invoice_line_ids") or []
             line_items = [l for l in raw_lines if isinstance(l, dict) and float(l.get("quantity", 0) or 0) != 0]
 
+            P = Paragraph  # shorthand
             elements = []
 
-            # ── 1. HEADER BAND ───────────────────────────────────────────────
-            # Inner table for INVOICE label + number — needs its own right padding
-            # because the outer cell's RIGHTPADDING does not clip a nested Table.
-            header_right_inner = Table(
-                [[Paragraph("INVOICE", s_inv_lbl)],
-                 [Paragraph(invoice_number, s_inv_num)]],
-                colWidths=[page_w * 0.45],
-            )
-            header_right_inner.setStyle(TableStyle([
-                ("RIGHTPADDING",  (0, 0), (-1, -1), 28),
-                ("TOPPADDING",    (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-                ("LEFTPADDING",   (0, 0), (-1, -1), 0),
-            ]))
-
-            header_table = Table(
-                [[Paragraph(company_name, s_company), header_right_inner]],
+            # ── 1. TOP ROW: company (left) | customer (right) ────────────────
+            top_row = Table(
+                [[
+                    P(company_name, s_company),
+                    Table(
+                        [[P("Bill To", s_cust_lbl)], [P(partner_name, s_cust_name)]],
+                        colWidths=[page_w * 0.45],
+                    ),
+                ]],
                 colWidths=[page_w * 0.55, page_w * 0.45],
             )
-            header_table.setStyle(TableStyle([
-                ("BACKGROUND",    (0, 0), (-1, -1), BRAND_BLUE),
-                ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING",   (0, 0), (0, -1),  28),
-                ("RIGHTPADDING",  (1, 0), (1, -1),  0),
-                ("TOPPADDING",    (0, 0), (-1, -1), 26),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 26),
-            ]))
-            elements.append(header_table)
-            elements.append(HRFlowable(width="100%", thickness=3, color=ACCENT_BLUE, spaceAfter=12))
-
-            # ── 2. BILL TO  |  INVOICE DETAILS ──────────────────────────────
-            bill_to_inner = Table(
-                [[Paragraph("BILL TO", s_section)],
-                 [Paragraph(partner_name, s_value)]],
-                colWidths=[page_w * 0.48],
-            )
-            inv_detail_rows = [
-                [Paragraph("Invoice No",   s_label), Paragraph(invoice_number, s_body)],
-                [Paragraph("Invoice Date", s_label), Paragraph(invoice_date,   s_body)],
-                [Paragraph("Due Date",     s_label), Paragraph(due_date,       s_body)],
-                [Paragraph("Status",       s_label),
-                 Paragraph(payment_label, ParagraphStyle("St", parent=s_body, textColor=status_color, fontName=font_bold))],
-            ]
-            inv_detail_inner = Table(inv_detail_rows, colWidths=[page_w * 0.22, page_w * 0.26])
-            inv_detail_inner.setStyle(TableStyle([
-                ("TOPPADDING",    (0, 0), (-1, -1), 3),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                ("LEFTPADDING",   (0, 0), (-1, -1), 6),
-            ]))
-            info_row = Table([[bill_to_inner, inv_detail_inner]], colWidths=[page_w * 0.52, page_w * 0.48])
-            info_row.setStyle(TableStyle([
+            top_row.setStyle(TableStyle([
                 ("VALIGN",        (0, 0), (-1, -1), "TOP"),
-                ("TOPPADDING",    (0, 0), (-1, -1), 10),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-                ("LEFTPADDING",   (0, 0), (0, -1),  12),
-                ("BACKGROUND",    (0, 0), (-1, -1), LIGHT_BLUE),
-                ("BOX",           (0, 0), (-1, -1), 0.5, BORDER_GREY),
-                ("LINEAFTER",     (0, 0), (0, -1),  0.5, BORDER_GREY),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
+                ("TOPPADDING",    (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
             ]))
-            elements.append(info_row)
-            elements.append(Spacer(1, 6 * mm))
+            elements.append(top_row)
+            elements.append(Spacer(1, 8 * mm))
 
-            # ── 3. LINE ITEMS TABLE (when available) ─────────────────────────
+            # ── 2. INVOICE HEADING ───────────────────────────────────────────
+            elements.append(P(f"Invoice {invoice_number}", s_inv_head))
+            elements.append(Spacer(1, 4 * mm))
+
+            # ── 3. DATE FIELDS ───────────────────────────────────────────────
+            date_row = Table(
+                [[
+                    Table([[P("Invoice Date", s_date_lbl)], [P(invoice_date, s_date_val)]], colWidths=[page_w * 0.25]),
+                    Table([[P("Due Date",      s_date_lbl)], [P(due_date,     s_date_val)]], colWidths=[page_w * 0.25]),
+                    P("", s_date_lbl),
+                ]],
+                colWidths=[page_w * 0.25, page_w * 0.25, page_w * 0.5],
+            )
+            date_row.setStyle(TableStyle([
+                ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
+                ("TOPPADDING",    (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]))
+            elements.append(date_row)
+            elements.append(Spacer(1, 4 * mm))
+            elements.append(HRFlowable(width="100%", thickness=1.5, color=C_TEAL, spaceAfter=8))
+
+            # ── 4. LINE ITEMS TABLE ──────────────────────────────────────────
             subtotal = 0.0
             if line_items:
-                col_w = [page_w * 0.50, page_w * 0.12, page_w * 0.19, page_w * 0.19]
+                col_w = [page_w * 0.50, page_w * 0.13, page_w * 0.18, page_w * 0.19]
                 rows = [[
-                    Paragraph("Description", s_th),
-                    Paragraph("Qty",    ParagraphStyle("ThC", parent=s_th, alignment=TA_CENTER)),
-                    Paragraph("Rate",   ParagraphStyle("ThR", parent=s_th, alignment=TA_RIGHT)),
-                    Paragraph("Amount", ParagraphStyle("ThA", parent=s_th, alignment=TA_RIGHT)),
+                    P("Description", s_col_hdr),
+                    P("Quantity",    s_col_hdr_c),
+                    P("Unit Price",  s_col_hdr_r),
+                    P("Amount",      s_col_hdr_r),
                 ]]
                 for line in line_items:
-                    # name can be a description string; product_id is [id, name] if present
                     desc  = line.get("name") or (
-                        line["product_id"][1] if isinstance(line.get("product_id"), (list, tuple)) and len(line["product_id"]) >= 2
+                        line["product_id"][1]
+                        if isinstance(line.get("product_id"), (list, tuple)) and len(line["product_id"]) >= 2
                         else "—"
                     )
-                    qty   = float(line.get("quantity", 1) or 1)
-                    rate  = float(line.get("price_unit", 0) or 0)
+                    qty   = float(line.get("quantity",      1)   or 1)
+                    rate  = float(line.get("price_unit",    0)   or 0)
                     total = float(line.get("price_subtotal", qty * rate) or 0)
                     subtotal += total
                     rows.append([
-                        Paragraph(str(desc), s_td),
-                        Paragraph(f"{qty:g}",              s_td_c),
-                        Paragraph(f"{rupee} {rate:,.2f}",  s_td_r),
-                        Paragraph(f"{rupee} {total:,.2f}", s_td_r),
+                        P(str(desc),              s_td),
+                        P(f"{qty:g}",             s_td_c),
+                        P(f"{rate:,.2f}",         s_td_r),
+                        P(f"{rupee} {total:,.2f}", s_td_r),
                     ])
 
                 items_table = Table(rows, colWidths=col_w, repeatRows=1)
                 ts = TableStyle([
-                    ("BACKGROUND",    (0, 0), (-1, 0),  BRAND_BLUE),
-                    ("TOPPADDING",    (0, 0), (-1, -1), 8),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-                    ("LEFTPADDING",   (0, 0), (-1, -1), 10),
-                    ("RIGHTPADDING",  (0, 0), (-1, -1), 10),
-                    ("BOX",           (0, 0), (-1, -1), 0.5, BORDER_GREY),
-                    ("LINEBELOW",     (0, 0), (-1, -1), 0.3, BORDER_GREY),
+                    ("LINEBELOW",     (0, 0), (-1, 0),  0.8, C_TEAL),
+                    ("TOPPADDING",    (0, 0), (-1, -1), 7),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+                    ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
+                    ("LINEBELOW",     (0, 1), (-1, -1), 0.3, C_RULE),
                     ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
                 ])
                 for i in range(1, len(rows)):
-                    ts.add("BACKGROUND", (0, i), (-1, i), colors.white if i % 2 == 1 else ROW_ALT)
+                    if i % 2 == 0:
+                        ts.add("BACKGROUND", (0, i), (-1, i), C_ALT)
                 items_table.setStyle(ts)
                 elements.append(items_table)
             else:
                 subtotal = amount_total
 
-            elements.append(Spacer(1, 4 * mm))
+            elements.append(Spacer(1, 6 * mm))
 
-            # ── 4. TOTALS BLOCK (right-aligned) ──────────────────────────────
-            if payment_state == "paid":
-                amount_paid = amount_total
-                balance_due = 0.0
-            else:
-                amount_paid = 0.0
-                balance_due = amount_total
+            # ── 5. BOTTOM SECTION: notes (left) | total (right) ─────────────
+            note_rows = []
+            if payment_term:
+                note_rows.append([P("Payment terms:", s_note), P(payment_term, s_note_val)])
+            note_rows.append([P("Payment Communication:", s_note), P(str(payment_ref), s_note_val)])
 
-            totals_rows: list = []
-            if line_items:
-                totals_rows.append([Paragraph("Subtotal", s_tot_l), Paragraph(f"{rupee} {subtotal:,.2f}", s_tot_r)])
-            totals_rows.append([Paragraph("Total", s_tot_l), Paragraph(f"{rupee} {amount_total:,.2f}", s_tot_r)])
-            if amount_paid > 0:
-                totals_rows.append([
-                    Paragraph(f"Paid ({payment_label})", s_tot_l),
-                    Paragraph(f"- {rupee} {amount_paid:,.2f}", s_tot_r),
-                ])
-            # Balance due — dark highlight row
-            totals_rows.append([Paragraph("Balance Due", s_bal_l), Paragraph(f"{rupee} {balance_due:,.2f}", s_bal_r)])
-
-            n = len(totals_rows)
-            totals_table = Table(totals_rows, colWidths=[page_w * 0.42, page_w * 0.18])
-            ts2 = TableStyle([
-                ("TOPPADDING",    (0, 0),    (-1, -1),   6),
-                ("BOTTOMPADDING", (0, 0),    (-1, -1),   6),
-                ("LEFTPADDING",   (0, 0),    (-1, -1),   12),
-                ("RIGHTPADDING",  (0, 0),    (-1, -1),   12),
-                ("LINEBELOW",     (0, 0),    (-1, n - 2), 0.3, BORDER_GREY),
-                ("BOX",           (0, 0),    (-1, n - 2), 0.5, BORDER_GREY),
-                ("BACKGROUND",    (0, 0),    (-1, n - 2), colors.white),
-                ("BACKGROUND",    (0, n - 1), (-1, n - 1), BRAND_BLUE),
-                ("TOPPADDING",    (0, n - 1), (-1, n - 1), 10),
-                ("BOTTOMPADDING", (0, n - 1), (-1, n - 1), 10),
-            ])
-            totals_table.setStyle(ts2)
-
-            # Spacer on the left pushes totals to the right
-            wrapper = Table(
-                [[Paragraph("", s_label), totals_table]],
-                colWidths=[page_w * 0.4, page_w * 0.6],
-            )
-            wrapper.setStyle(TableStyle([
-                ("TOPPADDING",    (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            left_inner = Table(note_rows, colWidths=[page_w * 0.30, page_w * 0.22])
+            left_inner.setStyle(TableStyle([
+                ("TOPPADDING",    (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
                 ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 6),
+            ]))
+
+            right_inner = Table(
+                [[P("Total", s_tot_lbl), P(f"{rupee} {amount_total:,.2f}", s_tot_val)]],
+                colWidths=[page_w * 0.20, page_w * 0.28],
+            )
+            right_inner.setStyle(TableStyle([
+                ("LINEABOVE",     (0, 0), (-1, 0),  1.0, C_TEAL),
+                ("TOPPADDING",    (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 6),
                 ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
             ]))
-            elements.append(wrapper)
-            elements.append(Spacer(1, 10 * mm))
 
-            # ── 5. FOOTER ────────────────────────────────────────────────────
-            elements.append(HRFlowable(width="100%", thickness=1, color=BORDER_GREY, spaceAfter=6))
-            support_email = getattr(settings, "COMPANY_EMAIL", "support@flexmindinnovations.com")
-            elements.append(Paragraph(
-                f"Thank you for your business. For queries regarding this invoice, "
-                f"please contact us at {support_email}.",
-                s_footer,
-            ))
+            bottom_row = Table(
+                [[left_inner, right_inner]],
+                colWidths=[page_w * 0.52, page_w * 0.48],
+            )
+            bottom_row.setStyle(TableStyle([
+                ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
+                ("TOPPADDING",    (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]))
+            elements.append(bottom_row)
+            elements.append(Spacer(1, 5 * mm))
+
+            # ── 6. TOTAL AMOUNT IN WORDS ─────────────────────────────────────
+            amount_words = self._amount_to_words(amount_total)
+            words_row = Table(
+                [[
+                    P("", s_words_lbl),
+                    Table(
+                        [[P("Total amount in words:", s_words_lbl)],
+                         [P(amount_words, s_words_val)]],
+                        colWidths=[page_w * 0.45],
+                    ),
+                ]],
+                colWidths=[page_w * 0.55, page_w * 0.45],
+            )
+            words_row.setStyle(TableStyle([
+                ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
+                ("TOPPADDING",    (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]))
+            elements.append(words_row)
+            elements.append(Spacer(1, 14 * mm))
+
+            # ── 7. FOOTER ────────────────────────────────────────────────────
+            elements.append(HRFlowable(width="100%", thickness=0.5, color=C_RULE, spaceAfter=4))
+            elements.append(P(support_email, s_footer))
 
             doc.build(elements)
             pdf_bytes = pdf_buffer.getvalue()
@@ -830,19 +882,27 @@ class OdooService:
                 "account.move",
                 "read",
                 [[invoice_id]],
-                {"fields": ["id", "name", "partner_id", "invoice_date", "amount_total", "state", "payment_state", "invoice_line_ids"]}
+                {"fields": [
+                    "id", "name", "partner_id",
+                    "invoice_date", "invoice_date_due",
+                    "amount_total", "amount_tax",
+                    "state", "payment_state",
+                    "invoice_line_ids",
+                    "invoice_payment_term_id",
+                    "payment_reference", "ref",
+                ]}
             )
             if not invoices:
                 raise ValueError(f"Invoice {invoice_id} not found in Odoo")
             invoice = invoices[0]
-            
+
             # Fetch invoice lines details
             if invoice.get("invoice_line_ids"):
                 lines = self._execute(
                     "account.move.line",
                     "read",
                     [invoice["invoice_line_ids"]],
-                    {"fields": ["id", "name", "quantity", "price_unit", "price_subtotal"]}
+                    {"fields": ["id", "name", "quantity", "price_unit", "price_subtotal", "tax_ids"]}
                 )
                 invoice["invoice_line_ids"] = lines
             else:
