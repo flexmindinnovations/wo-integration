@@ -65,17 +65,19 @@ async def process_ai_reply(phone: str, text_body: str) -> None:
 
         query = text_body.lower()
         is_invoice_request = any(kw in query for kw in _INVOICE_KEYWORDS)
-        # PDF send requires explicit intent — "how many" / "just count" should NOT trigger
+        # PDF send requires explicit intent — "how many paid" should NOT trigger
         should_send_pdf = is_invoice_request and any(kw in query for kw in _PDF_SEND_KEYWORDS)
-        invoices = odoo_context.get("invoices", []) if odoo_context else []
-        has_invoices = bool(invoices)
+        # All invoices for AI context; unpaid only for PDF sending
+        all_invoices    = odoo_context.get("invoices", [])       if odoo_context else []
+        unpaid_invoices = odoo_context.get("unpaid_invoices", []) if odoo_context else []
+        has_invoices = bool(all_invoices)
 
         # ── AI reply ──────────────────────────────────────────────────────────
         ai_reply, is_fallback = _safe_generate_reply(phone, db, contact, odoo_context)
 
         if is_fallback:
             if is_invoice_request and has_invoices:
-                ai_reply = _build_invoice_reply(contact, invoices[:3], text_body)
+                ai_reply = _build_invoice_reply(contact, all_invoices[:5], text_body)
             else:
                 ai_reply = "Sorry, I encountered an error. Please try again shortly."
 
@@ -98,9 +100,9 @@ async def process_ai_reply(phone: str, text_body: str) -> None:
         except Exception as wa_err:
             logger.warning("WhatsApp send failed for AI reply", extra={"phone": phone, "error": str(wa_err)})
 
-        # ── Invoice PDFs — only when user explicitly asked for them ──────────
-        if should_send_pdf and has_invoices and contact and contact.odoo_partner_id:
-            await _send_invoices_and_record(phone, invoices, db)
+        # ── Invoice PDFs — only when user explicitly asked, unpaid invoices only ──
+        if should_send_pdf and unpaid_invoices and contact and contact.odoo_partner_id:
+            await _send_invoices_and_record(phone, unpaid_invoices, db)
 
     except Exception:
         logger.exception("Error in AI reply pipeline", extra={"phone": phone})

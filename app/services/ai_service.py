@@ -152,13 +152,13 @@ class AiService:
         # Case 1: Odoo access succeeded and has data
         if access_success and has_any_business_data:
             if has_invoices:
-                prompt += f"OUTSTANDING INVOICES ({len(odoo_context['invoices'])} total):\n"
-                for inv in odoo_context["invoices"][:5]:
-                    due = inv.get("due_date") or inv.get("invoice_date", "N/A")
+                prompt += f"INVOICES ({len(odoo_context['invoices'])} total):\n"
+                for inv in odoo_context["invoices"][:10]:
+                    date = inv.get("invoice_date") or inv.get("due_date") or "N/A"
                     amount = inv.get("amount_total", 0)
-                    state = inv.get("payment_state", "unknown")
+                    state = inv.get("payment_state", "unknown").replace("_", " ")
                     name = inv.get("name", "Unknown")
-                    prompt += f"  • {name}: ₹{amount:.2f} (Date: {due}, Status: {state})\n"
+                    prompt += f"  • {name}: ₹{amount:.2f} (Date: {date}, Status: {state})\n"
                 prompt += "\n"
 
             if has_orders:

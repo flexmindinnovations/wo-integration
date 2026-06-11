@@ -207,24 +207,28 @@ class OdooService:
         )
         return {"created": created, "updated": updated, "skipped": skipped, "total": len(partners)}
 
-    def fetch_customer_invoices(self, partner_id: int, limit: int = ApiDefaults.INVOICE_LIMIT) -> List[Dict[str, Any]]:
-        """Fetch unpaid/open invoices for a customer. Returns empty list if model unavailable."""
-        # Odoo 19+ uses account.move without due_date field, older versions may have it
-        # Try multiple field combinations for compatibility across versions
+    def fetch_customer_invoices(self, partner_id: int, limit: int = ApiDefaults.INVOICE_LIMIT, unpaid_only: bool = False) -> List[Dict[str, Any]]:
+        """
+        Fetch customer invoices from Odoo.
+        unpaid_only=True  → outstanding invoices only (used for PDF sending)
+        unpaid_only=False → all invoices (used for AI context so it can answer
+                            questions about paid, unpaid, totals, etc.)
+        """
+        base_domain = [
+            [OdooFieldsInvoice.PARTNER_ID, "=", partner_id],
+            [OdooFieldsInvoice.MOVE_TYPE, "in", [OdooMoveTypes.OUT_INVOICE, OdooMoveTypes.OUT_REFUND]],
+        ]
+        if unpaid_only:
+            base_domain.append([OdooFieldsInvoice.PAYMENT_STATE, "!=", OdooPaymentStates.PAID])
+
         models_to_try = [
-            (OdooModels.ACCOUNT_MOVE, [
-                [OdooFieldsInvoice.PARTNER_ID, "=", partner_id],
-                [OdooFieldsInvoice.MOVE_TYPE, "in", [OdooMoveTypes.OUT_INVOICE, OdooMoveTypes.OUT_REFUND]],
-                [OdooFieldsInvoice.PAYMENT_STATE, "!=", OdooPaymentStates.PAID]
-            ], [
-                # Odoo 19+ compatible: no due_date
+            (OdooModels.ACCOUNT_MOVE, base_domain, [
                 [OdooFieldsInvoice.ID, OdooFieldsInvoice.NAME, OdooFieldsInvoice.INVOICE_DATE, OdooFieldsInvoice.AMOUNT_TOTAL, OdooFieldsInvoice.PAYMENT_STATE],
-                # Fallback for older versions that have due_date
                 [OdooFieldsInvoice.ID, OdooFieldsInvoice.NAME, OdooFieldsInvoice.INVOICE_DATE, OdooFieldsInvoice.DUE_DATE, OdooFieldsInvoice.AMOUNT_TOTAL, OdooFieldsInvoice.PAYMENT_STATE],
             ]),
             (OdooModels.ACCOUNT_INVOICE, [
                 [OdooFieldsInvoice.PARTNER_ID, "=", partner_id],
-                [OdooFieldsInvoice.PAYMENT_STATE, "!=", OdooPaymentStates.PAID]
+                *([[ OdooFieldsInvoice.PAYMENT_STATE, "!=", OdooPaymentStates.PAID]] if unpaid_only else []),
             ], [
                 [OdooFieldsInvoice.ID, OdooFieldsInvoice.NAME, OdooFieldsInvoice.INVOICE_DATE, OdooFieldsInvoice.DUE_DATE, OdooFieldsInvoice.AMOUNT_TOTAL, OdooFieldsInvoice.PAYMENT_STATE],
             ]),
@@ -232,38 +236,24 @@ class OdooService:
 
         errors_encountered = []
         for model, domain, field_lists in models_to_try:
-            # Try each field list for the model (in case some fields don't exist)
-            field_lists = field_lists if isinstance(field_lists[0], list) else [field_lists]
-
             for fields in field_lists:
                 try:
                     invoices = self._execute(
-                        model,
-                        "search_read",
-                        [domain],
-                        {
-                            "fields": fields,
-                            "order": "invoice_date DESC",
-                            "limit": limit
-                        }
+                        model, "search_read", [domain],
+                        {"fields": fields, "order": "invoice_date DESC", "limit": limit}
                     )
                     logger.info(
                         "Customer invoices fetched",
-                        extra={"partner_id": partner_id, "count": len(invoices), "model": model, "fields": fields}
+                        extra={"partner_id": partner_id, "count": len(invoices), "unpaid_only": unpaid_only}
                     )
                     return invoices
                 except Exception as e:
-                    error_msg = str(e)
-                    logger.debug(
-                        f"Model {model} with fields {fields} not available",
-                        extra={"partner_id": partner_id, "error": error_msg}
-                    )
+                    logger.debug(f"Model {model} with fields {fields} not available", extra={"error": str(e)})
                     continue
-
             errors_encountered.append(f"{model}: failed all field combinations")
 
         logger.warning(
-            "Could not fetch invoices — no accounting model accessible. Check if accounting module is installed and enabled.",
+            "Could not fetch invoices — no accounting model accessible.",
             extra={"partner_id": partner_id, "models_tried": errors_encountered}
         )
         return []
@@ -340,19 +330,21 @@ class OdooService:
             )
             partner = partners[0] if partners else {}
 
-            # Fetch each data type independently - if one fails, continue with others
-            invoices = self.fetch_customer_invoices(partner_id)
-            orders = self.fetch_customer_orders(partner_id)
+            # Fetch all invoices for AI context; separately fetch unpaid for PDF sending
+            all_invoices    = self.fetch_customer_invoices(partner_id, unpaid_only=False)
+            unpaid_invoices = [i for i in all_invoices if i.get("payment_state") != OdooPaymentStates.PAID]
+            orders   = self.fetch_customer_orders(partner_id)
             payments = self.fetch_customer_payments(partner_id)
 
-            has_data = bool(invoices or orders or payments)
+            has_data = bool(all_invoices or orders or payments)
             context = {
                 "partner": partner,
-                "invoices": invoices,
+                "invoices": all_invoices,        # full history — for AI context
+                "unpaid_invoices": unpaid_invoices,  # outstanding only — for PDF sending
                 "orders": orders,
                 "payments": payments,
                 "company_name": partner.get("name", ""),
-                "access_success": True  # Odoo fetch succeeded
+                "access_success": True
             }
 
             logger.info(
@@ -369,10 +361,11 @@ class OdooService:
             return {
                 "partner": {},
                 "invoices": [],
+                "unpaid_invoices": [],
                 "orders": [],
                 "payments": [],
                 "company_name": "",
-                "access_success": False  # Odoo fetch failed
+                "access_success": False
             }
 
     def get_invoice_pdf(self, invoice_id: int) -> bytes:
