@@ -133,42 +133,40 @@ def _safe_generate_reply(phone, db, contact, odoo_context) -> tuple[str, bool]:
 
 
 def _build_invoice_reply(contact, invoices: list, user_query: str = "") -> str:
-    """Build a structured invoice summary message when the AI is unavailable."""
+    """
+    Structured fallback used only when the AI model is unavailable.
+    Returns a neutral account summary — the AI normally handles intent.
+    PDF line is added only if the user explicitly asked for one.
+    """
     first_name = contact.name.split()[0] if (contact and contact.name) else "there"
     count = len(invoices)
     noun = "invoice" if count == 1 else "invoices"
-    query = user_query.lower()
-
-    # Count-only query — return a single concise line
-    is_count_query = any(kw in query for kw in ("how many", "count", "number of", "total invoice"))
-    if is_count_query:
-        return f"You have *{count}* outstanding {noun}."
 
     lines = []
     for inv in invoices:
-        name = inv.get("name", "Invoice")
+        name   = inv.get("name", "Invoice")
         amount = inv.get("amount_total", 0)
-        date = inv.get("invoice_date") or inv.get("invoice_date_due") or "N/A"
+        date   = inv.get("invoice_date") or inv.get("invoice_date_due") or "N/A"
         status = inv.get("payment_state", "unknown").replace("_", " ")
-        lines.append(f"• *{name}* for *₹{amount:,.2f}* (Date: {date}, Status: {status})")
+        lines.append(f"• *{name}* — ₹{amount:,.2f} (Date: {date}, Status: {status})")
 
-    wants_pdf = any(kw in query for kw in _PDF_SEND_KEYWORDS)
-    inv_names = ", ".join(f"*{inv.get('name', 'Invoice')}*" for inv in invoices)
-    pdf_line = ""
-    if wants_pdf:
-        pdf_line = (
-            f"\nThe PDF for invoice {inv_names} is being sent to you in this chat now."
-            if count == 1
-            else f"\nThe PDFs for {inv_names} are being sent to you in this chat now."
-        )
-
-    return (
-        f"Yes, {first_name}, I can definitely help you with that!\n\n"
-        f"I see you have {count} outstanding {noun}:\n"
+    body = (
+        f"Hi {first_name}, here's a summary of your account:\n\n"
+        f"You have *{count}* outstanding {noun}:\n"
         + "\n".join(lines)
-        + pdf_line
-        + ("\n\nYou can pay securely on our website, or let me know if you need assistance with other payment methods." if wants_pdf else "")
     )
+
+    wants_pdf = any(kw in user_query.lower() for kw in _PDF_SEND_KEYWORDS)
+    if wants_pdf:
+        inv_names = ", ".join(f"*{inv.get('name', 'Invoice')}*" for inv in invoices)
+        pdf_line = (
+            f"The PDF for invoice {inv_names} is being sent to you now."
+            if count == 1
+            else f"The PDFs for {inv_names} are being sent to you now."
+        )
+        body += f"\n\n{pdf_line}"
+
+    return body
 
 
 async def _send_invoices_and_record(phone: str, invoices: list, db) -> None:

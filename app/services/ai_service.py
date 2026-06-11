@@ -10,12 +10,9 @@ from app.models.conversation_message import ConversationMessage
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
-    "You are a helpful, friendly assistant communicating via WhatsApp. "
+    "You are a helpful, friendly customer service assistant communicating via WhatsApp. "
+    "Understand exactly what the customer is asking and respond to that — nothing more, nothing less. "
     "Keep responses concise and conversational. "
-    "Answer exactly what was asked — nothing more. "
-    "If the customer asks for a count, reply with just the count. "
-    "If they ask for details, give details. "
-    "Do not volunteer information they did not request. "
     "If you are unsure about something, say so honestly."
 )
 
@@ -180,15 +177,12 @@ class AiService:
                     prompt += f"Last Payment: {payment_date} (₹{payment.get('amount', 0):.2f})\n\n"
 
             prompt += (
-                "Use this account information to provide personalized, helpful responses. "
-                "Be concise for WhatsApp — short paragraphs, no unnecessary filler. "
-                "IMPORTANT — match your response exactly to what was asked:\n"
-                "  • If asked for a count (e.g. 'how many invoices'), reply with just the number and nothing else.\n"
-                "  • If asked for a summary or list, list the invoices briefly.\n"
-                "  • If asked for a PDF or to send/share a document, mention that the PDF is being sent.\n"
-                "  • Do NOT mention PDFs unless the customer explicitly asked for one.\n"
-                "  • Do NOT add extra details, offers, or suggestions unless the customer asked.\n"
-                "Offer solutions based on their account status only if they ask. "
+                "Use the account data above to give accurate, personalized answers. "
+                "Be concise for WhatsApp — short and direct. "
+                "Read the customer's message carefully and respond to exactly what they asked. "
+                "A simple question deserves a simple answer; a detailed question deserves detail. "
+                "Only mention sending a PDF if the customer explicitly asked for one. "
+                "Do not add unsolicited suggestions or extra information. "
                 "If unsure, be honest."
             )
         # Case 2: Odoo access succeeded but no data found
