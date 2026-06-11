@@ -17,6 +17,7 @@ class Settings(BaseSettings):
 
     # Google Gemini AI
     GOOGLE_GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.0-flash"
 
     # PostgreSQL
     DATABASE_URL: str = "postgresql://postgres:postgres@localhost:5432/whatsapp_campaigns"

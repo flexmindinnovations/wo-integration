@@ -1,18 +1,47 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models.campaign_message import CampaignMessage, DeliveryStatus
 from app.models.conversation_message import ConversationMessage, MessageRole
 from app.models.contact import Contact
-from app.services.ai_service import AiService
 from app.services.whatsapp_service import WhatsAppService
 from app.services.odoo_service import OdooService
+from app.services.ws_manager import manager
+from app.services.ai_pipeline import process_ai_reply, serialize_message as _serialize_message
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 logger = logging.getLogger(__name__)
+
+
+
+@router.websocket("/ws/chat")
+async def websocket_chat(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        # Fetch history with a short-lived session, close it immediately.
+        # Do NOT use Depends(get_db) here — that holds the connection open
+        # for the entire WebSocket lifetime, exhausting the pool.
+        db = SessionLocal()
+        try:
+            recent = (
+                db.query(ConversationMessage)
+                .order_by(ConversationMessage.created_at.desc())
+                .limit(50)
+                .all()
+            )
+            history = [_serialize_message(m) for m in reversed(recent)]
+        finally:
+            db.close()
+
+        await websocket.send_json({"type": "history", "messages": history})
+
+        while True:
+            await websocket.receive_text()  # keep-alive / ping-pong
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 
 @router.get("/whatsapp", summary="WhatsApp webhook verification handshake")
@@ -34,12 +63,12 @@ def verify_webhook(request: Request) -> Response:
 
 
 @router.post("/whatsapp", summary="Receive WhatsApp status and message events")
-async def receive_webhook(request: Request, db: Session = Depends(get_db)):
+async def receive_webhook(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """
     Processes incoming webhook events from WhatsApp Cloud API:
 
     - **Delivery status updates** (sent / delivered / read / failed) → update CampaignMessage records.
-    - **Incoming messages** → AI extension point (not yet implemented).
+    - **Incoming messages** → dedup + persist synchronously, then reply via background task.
 
     Always returns HTTP 200 so WhatsApp does not retry the delivery.
     """
@@ -52,9 +81,8 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)):
                 for status_event in value.get("statuses", []):
                     _process_status_update(status_event, db)
 
-                # AI extension point: incoming customer messages
                 for message in value.get("messages", []):
-                    _handle_incoming_message(message, db)
+                    _handle_incoming_message(message, db, background_tasks)
 
     except Exception:
         logger.exception("Error processing WhatsApp webhook")
@@ -202,13 +230,12 @@ def _process_status_update(event: dict, db: Session) -> None:
     )
 
 
-def _handle_incoming_message(message: dict, db: Session) -> None:
+def _handle_incoming_message(message: dict, db: Session, background_tasks: BackgroundTasks) -> None:
     """
-    Handle an inbound WhatsApp message:
-      1. Only process text messages; log and skip everything else.
-      2. Deduplicate by wamid to handle webhook retries.
-      3. Persist user message → generate AI reply → persist reply → send reply.
-      4. Never raise — the caller must always return HTTP 200.
+    Fast path: dedup by wamid and persist the user message synchronously so
+    any webhook retry from Meta is caught before returning 200.  The slow work
+    (Odoo context, AI generation, WhatsApp send) is offloaded to a background
+    task so the 200 response is returned immediately.
     """
     msg_type: str = message.get("type", "")
     phone: str = message.get("from", "")
@@ -227,7 +254,7 @@ def _handle_incoming_message(message: dict, db: Session) -> None:
         return
 
     try:
-        # Deduplication
+        # Deduplication — must happen before returning 200
         if wamid:
             existing = (
                 db.query(ConversationMessage)
@@ -241,7 +268,7 @@ def _handle_incoming_message(message: dict, db: Session) -> None:
                 )
                 return
 
-        # Persist user message
+        # Persist user message now so a Meta retry sees it as a duplicate
         user_msg = ConversationMessage(
             contact_phone=phone,
             role=MessageRole.user,
@@ -250,93 +277,21 @@ def _handle_incoming_message(message: dict, db: Session) -> None:
         )
         db.add(user_msg)
         db.commit()
-        db.refresh(user_msg)
-
-        # Fetch contact and Odoo context for AI reply
-        from app.models.contact import Contact
-        contact = db.query(Contact).filter(Contact.phone == phone).first()
-        odoo_context = None
-
-        if contact and contact.odoo_partner_id:
-            try:
-                from app.services.odoo_service import OdooService
-                odoo = OdooService()
-                odoo_context = odoo.fetch_customer_context(contact.odoo_partner_id)
-            except Exception as e:
-                logger.warning(
-                    "Failed to fetch Odoo context — proceeding with generic reply",
-                    extra={"phone": phone, "partner_id": contact.odoo_partner_id, "error": str(e)},
-                )
-        else:
-            logger.warning(
-                "Contact not linked to Odoo or contact not found",
-                extra={"phone": phone, "contact_found": contact is not None, "has_partner_id": contact.odoo_partner_id if contact else None},
-            )
-
-        # Generate AI reply with context
-        ai_reply = AiService().generate_reply_with_context(
-            phone, db,
-            contact=contact,
-            odoo_context=odoo_context
-        )
-
-        # Persist assistant message
-        assistant_msg = ConversationMessage(
-            contact_phone=phone,
-            role=MessageRole.assistant,
-            content=ai_reply,
-            wamid=None,
-        )
-        db.add(assistant_msg)
-        db.commit()
-
-        # Send reply via WhatsApp
-        WhatsAppService().send_text(phone, ai_reply)
-        logger.info("AI reply sent", extra={"phone": phone})
-
-        # If user asked about invoices and we have invoice data, send PDF
-        user_msg_lower = text_body.lower()
-        has_invoices = odoo_context and odoo_context.get("invoices")
-        is_invoice_request = any(
-            keyword in user_msg_lower
-            for keyword in ["invoice", "bill", "pdf", "document", "payment"]
-        )
-
-        logger.info(
-            "Checking if should send invoice PDFs",
-            extra={
-                "phone": phone,
-                "is_invoice_request": is_invoice_request,
-                "has_invoices": bool(has_invoices),
-                "invoice_count": len(odoo_context.get("invoices", [])) if has_invoices else 0,
-                "has_contact": contact is not None,
-                "has_odoo_partner": contact.odoo_partner_id if contact else None,
-            }
-        )
-
-        if is_invoice_request and has_invoices and contact and contact.odoo_partner_id:
-            logger.info("Sending invoice PDFs", extra={"phone": phone, "count": len(odoo_context.get("invoices", []))})
-            _send_invoice_pdfs(phone, odoo_context.get("invoices", []), db)
-        else:
-            logger.info(
-                "Not sending PDFs (conditions not met)",
-                extra={
-                    "phone": phone,
-                    "is_invoice_request": is_invoice_request,
-                    "has_invoices": bool(has_invoices),
-                    "has_contact": contact is not None,
-                }
-            )
 
     except Exception:
         logger.exception(
-            "Error in AI message handler — suppressing to preserve 200 response",
+            "Error persisting incoming message",
             extra={"phone": phone, "wamid": wamid},
         )
         try:
             db.rollback()
         except Exception:
             pass
+        return
+
+    # Slow work runs after the 200 response is sent
+    background_tasks.add_task(process_ai_reply, phone, text_body)
+
 
 
 @router.get("/debug/invoice/{phone}", summary="Debug invoice fetch for a phone number")

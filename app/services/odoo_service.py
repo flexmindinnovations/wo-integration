@@ -7,12 +7,14 @@ from typing import TYPE_CHECKING, Any, Dict, List
 from sqlalchemy.orm import Session
 
 if TYPE_CHECKING:
-    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-    from reportlab.lib.units import inch
-    from reportlab.lib.enums import TA_CENTER
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import inch, mm
+    from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
 
 from app.config import settings
 from app.models.contact import Contact
@@ -488,109 +490,310 @@ class OdooService:
             )
             raise
 
+    @staticmethod
+    def _register_unicode_font() -> tuple[str, str]:
+        """
+        Register a TrueType font that supports the ₹ symbol.
+        Returns (regular_font_name, bold_font_name).
+        Falls back to Helvetica if no Unicode font is found.
+        """
+        import os
+        try:
+            from reportlab.pdfbase import pdfmetrics  # type: ignore
+            from reportlab.pdfbase.ttfonts import TTFont  # type: ignore
+
+            candidates = [
+                # Linux / Render (Ubuntu/Debian)
+                ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+                ("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                 "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"),
+                # Windows
+                ("C:\\Windows\\Fonts\\arial.ttf",
+                 "C:\\Windows\\Fonts\\arialbd.ttf"),
+                ("C:\\Windows\\Fonts\\calibri.ttf",
+                 "C:\\Windows\\Fonts\\calibrib.ttf"),
+            ]
+            for reg_path, bold_path in candidates:
+                if os.path.exists(reg_path):
+                    pdfmetrics.registerFont(TTFont("InvFont", reg_path))
+                    if os.path.exists(bold_path):
+                        pdfmetrics.registerFont(TTFont("InvFont-Bold", bold_path))
+                        return "InvFont", "InvFont-Bold"
+                    return "InvFont", "InvFont"
+        except Exception:
+            pass
+        return "Helvetica", "Helvetica-Bold"
+
     def generate_invoice_pdf(self, invoice_data: Dict[str, Any]) -> bytes:
         """
-        Generate a PDF from invoice data as a fallback when Odoo PDF fetch fails.
-
-        Args:
-            invoice_data: Dictionary with keys: name, amount_total, invoice_date, payment_state, due_date (optional)
-
-        Returns:
-            PDF bytes that can be uploaded to WhatsApp
+        Generate a proper invoice PDF with header, Bill To, line items table, and totals.
+        Line items are rendered when invoice_line_ids is present (from get_invoice);
+        otherwise only the totals block is shown (context from fetch_customer_invoices).
         """
         if not REPORTLAB_AVAILABLE:
             raise ImportError("reportlab is not installed - PDF generation not available")
 
         try:
-            from reportlab.lib.pagesizes import letter  # type: ignore
+            from reportlab.lib.pagesizes import A4  # type: ignore
             from reportlab.lib import colors  # type: ignore
-            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer  # type: ignore
-            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle  # type: ignore
-            from reportlab.lib.units import inch  # type: ignore
-            from reportlab.lib.enums import TA_CENTER  # type: ignore
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable  # type: ignore
+            from reportlab.lib.styles import ParagraphStyle  # type: ignore
+            from reportlab.lib.units import mm  # type: ignore
+            from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT  # type: ignore
 
-            logger.info(
-                "Generating invoice PDF from data",
-                extra={"invoice_name": invoice_data.get("name")}
-            )
+            logger.info("Generating invoice PDF", extra={"invoice_name": invoice_data.get("name")})
 
-            # Create PDF in memory
+            font_reg, font_bold = self._register_unicode_font()
+            rupee = InvoiceDefaults.RUPEE_SYMBOL
+
+            # ── Colours ──────────────────────────────────────────────────────
+            BRAND_BLUE  = colors.HexColor("#1A3C6E")
+            ACCENT_BLUE = colors.HexColor("#2563EB")
+            LIGHT_BLUE  = colors.HexColor("#EBF2FF")
+            ROW_ALT     = colors.HexColor("#F7F9FC")
+            BORDER_GREY = colors.HexColor("#CBD5E1")
+            TEXT_DARK   = colors.HexColor("#1E293B")
+            TEXT_MUTED  = colors.HexColor("#64748B")
+            GREEN       = colors.HexColor("#16A34A")
+            ORANGE      = colors.HexColor("#D97706")
+            RED         = colors.HexColor("#DC2626")
+
+            # ── Page setup ───────────────────────────────────────────────────
             pdf_buffer = BytesIO()
-            doc = SimpleDocTemplate(pdf_buffer, pagesize=letter)
-            styles = getSampleStyleSheet()
+            doc = SimpleDocTemplate(
+                pdf_buffer,
+                pagesize=A4,
+                leftMargin=15 * mm,
+                rightMargin=15 * mm,
+                topMargin=12 * mm,
+                bottomMargin=15 * mm,
+            )
+            page_w = A4[0] - 30 * mm
+
+            # ── Styles ───────────────────────────────────────────────────────
+            def sty(name, **kw):
+                kw.setdefault("fontName", font_reg)
+                return ParagraphStyle(name, **kw)
+
+            s_company = sty("Co",   fontSize=20, textColor=colors.white, fontName=font_bold, leading=24)
+            s_inv_lbl = sty("ILbl", fontSize=9,  textColor=colors.HexColor("#93C5FD"), alignment=TA_RIGHT)
+            s_inv_num = sty("INum", fontSize=16, textColor=colors.white, fontName=font_bold, alignment=TA_RIGHT, leading=20)
+            s_section = sty("Sec",  fontSize=8,  textColor=TEXT_MUTED, leading=11)
+            s_label   = sty("Lbl",  fontSize=9,  textColor=TEXT_MUTED, leading=13)
+            s_value   = sty("Val",  fontSize=10, textColor=TEXT_DARK,  fontName=font_bold, leading=14)
+            s_body    = sty("Bod",  fontSize=10, textColor=TEXT_DARK,  leading=14)
+            s_th      = sty("TH",   fontSize=10, textColor=colors.white, fontName=font_bold, leading=13)
+            s_td      = sty("TD",   fontSize=9,  textColor=TEXT_DARK, leading=13)
+            s_td_r    = sty("TDR",  fontSize=9,  textColor=TEXT_DARK, alignment=TA_RIGHT, leading=13)
+            s_td_c    = sty("TDC",  fontSize=9,  textColor=TEXT_DARK, alignment=TA_CENTER, leading=13)
+            s_tot_l   = sty("TotL", fontSize=10, textColor=TEXT_DARK, fontName=font_bold, leading=14)
+            s_tot_r   = sty("TotR", fontSize=10, textColor=TEXT_DARK, fontName=font_bold, alignment=TA_RIGHT, leading=14)
+            s_bal_l   = sty("BalL", fontSize=12, textColor=colors.white, fontName=font_bold, leading=16)
+            s_bal_r   = sty("BalR", fontSize=12, textColor=colors.white, fontName=font_bold, alignment=TA_RIGHT, leading=16)
+            s_footer  = sty("Ftr",  fontSize=8,  textColor=TEXT_MUTED, alignment=TA_CENTER, leading=12)
+
+            # ── Extract data ─────────────────────────────────────────────────
+            invoice_number = invoice_data.get("name", "N/A")
+            invoice_date   = str(invoice_data.get("invoice_date") or "N/A")
+            due_date       = str(invoice_data.get("due_date") or invoice_data.get("invoice_date") or "N/A")
+            payment_state  = invoice_data.get("payment_state", "not_paid")
+            payment_label  = payment_state.replace("_", " ").title()
+            amount_total   = float(invoice_data.get("amount_total", 0) or 0)
+            status_color   = GREEN if payment_state == "paid" else (ORANGE if payment_state == "partial" else RED)
+            company_name   = getattr(settings, "COMPANY_NAME", "Flexmind Innovations")
+
+            # partner_id is [id, "Name"] from XML-RPC or absent in context invoices
+            raw_partner = invoice_data.get("partner_id", "")
+            if isinstance(raw_partner, (list, tuple)) and len(raw_partner) >= 2:
+                partner_name = str(raw_partner[1])
+            elif isinstance(raw_partner, str) and raw_partner:
+                partner_name = raw_partner
+            else:
+                partner_name = "Customer"
+
+            # Line items — only present when invoice_data comes from get_invoice()
+            raw_lines = invoice_data.get("invoice_line_ids") or []
+            line_items = [l for l in raw_lines if isinstance(l, dict) and float(l.get("quantity", 0) or 0) != 0]
+
             elements = []
 
-            # Title
-            title_style = ParagraphStyle(
-                'CustomTitle',
-                parent=styles['Heading1'],
-                fontSize=24,
-                textColor=colors.HexColor('#1f4788'),
-                spaceAfter=30,
-                alignment=TA_CENTER
+            # ── 1. HEADER BAND ───────────────────────────────────────────────
+            # Inner table for INVOICE label + number — needs its own right padding
+            # because the outer cell's RIGHTPADDING does not clip a nested Table.
+            header_right_inner = Table(
+                [[Paragraph("INVOICE", s_inv_lbl)],
+                 [Paragraph(invoice_number, s_inv_num)]],
+                colWidths=[page_w * 0.45],
             )
-            elements.append(Paragraph("INVOICE", title_style))
-            elements.append(Spacer(1, 0.3 * inch))
-
-            # Invoice details
-            invoice_number = invoice_data.get("name", "N/A")
-            invoice_date = invoice_data.get("invoice_date", "N/A")
-            due_date = invoice_data.get("due_date", invoice_data.get("invoice_date", "N/A"))
-            amount = invoice_data.get("amount_total", 0)
-            payment_state = invoice_data.get("payment_state", "unknown").replace("_", " ").title()
-
-            # Details table with proper rupee symbol
-            details_data = [
-                ["Invoice Number:", invoice_number],
-                ["Invoice Date:", str(invoice_date)],
-                ["Due Date:", str(due_date)],
-                [f"Amount ({InvoiceDefaults.CURRENCY}):", f"{InvoiceDefaults.RUPEE_SYMBOL} {amount:,.2f}"],
-                ["Status:", payment_state],
-            ]
-
-            details_table = Table(details_data, colWidths=[2 * inch, 4 * inch])
-            details_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f0f0f0')),
-                ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 11),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
-                ('TOPPADDING', (0, 0), (-1, -1), 12),
-                ('GRID', (0, 0), (-1, -1), 1, colors.grey),
+            header_right_inner.setStyle(TableStyle([
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 28),
+                ("TOPPADDING",    (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 0),
             ]))
 
-            elements.append(details_table)
-            elements.append(Spacer(1, 0.5 * inch))
-
-            # Footer
-            footer_style = ParagraphStyle(
-                'Footer',
-                parent=styles['Normal'],
-                fontSize=9,
-                textColor=colors.grey,
-                alignment=TA_CENTER
+            header_table = Table(
+                [[Paragraph(company_name, s_company), header_right_inner]],
+                colWidths=[page_w * 0.55, page_w * 0.45],
             )
+            header_table.setStyle(TableStyle([
+                ("BACKGROUND",    (0, 0), (-1, -1), BRAND_BLUE),
+                ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING",   (0, 0), (0, -1),  28),
+                ("RIGHTPADDING",  (1, 0), (1, -1),  0),
+                ("TOPPADDING",    (0, 0), (-1, -1), 26),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 26),
+            ]))
+            elements.append(header_table)
+            elements.append(HRFlowable(width="100%", thickness=3, color=ACCENT_BLUE, spaceAfter=12))
+
+            # ── 2. BILL TO  |  INVOICE DETAILS ──────────────────────────────
+            bill_to_inner = Table(
+                [[Paragraph("BILL TO", s_section)],
+                 [Paragraph(partner_name, s_value)]],
+                colWidths=[page_w * 0.48],
+            )
+            inv_detail_rows = [
+                [Paragraph("Invoice No",   s_label), Paragraph(invoice_number, s_body)],
+                [Paragraph("Invoice Date", s_label), Paragraph(invoice_date,   s_body)],
+                [Paragraph("Due Date",     s_label), Paragraph(due_date,       s_body)],
+                [Paragraph("Status",       s_label),
+                 Paragraph(payment_label, ParagraphStyle("St", parent=s_body, textColor=status_color, fontName=font_bold))],
+            ]
+            inv_detail_inner = Table(inv_detail_rows, colWidths=[page_w * 0.22, page_w * 0.26])
+            inv_detail_inner.setStyle(TableStyle([
+                ("TOPPADDING",    (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+            ]))
+            info_row = Table([[bill_to_inner, inv_detail_inner]], colWidths=[page_w * 0.52, page_w * 0.48])
+            info_row.setStyle(TableStyle([
+                ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+                ("TOPPADDING",    (0, 0), (-1, -1), 10),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                ("LEFTPADDING",   (0, 0), (0, -1),  12),
+                ("BACKGROUND",    (0, 0), (-1, -1), LIGHT_BLUE),
+                ("BOX",           (0, 0), (-1, -1), 0.5, BORDER_GREY),
+                ("LINEAFTER",     (0, 0), (0, -1),  0.5, BORDER_GREY),
+            ]))
+            elements.append(info_row)
+            elements.append(Spacer(1, 6 * mm))
+
+            # ── 3. LINE ITEMS TABLE (when available) ─────────────────────────
+            subtotal = 0.0
+            if line_items:
+                col_w = [page_w * 0.50, page_w * 0.12, page_w * 0.19, page_w * 0.19]
+                rows = [[
+                    Paragraph("Description", s_th),
+                    Paragraph("Qty",    ParagraphStyle("ThC", parent=s_th, alignment=TA_CENTER)),
+                    Paragraph("Rate",   ParagraphStyle("ThR", parent=s_th, alignment=TA_RIGHT)),
+                    Paragraph("Amount", ParagraphStyle("ThA", parent=s_th, alignment=TA_RIGHT)),
+                ]]
+                for line in line_items:
+                    # name can be a description string; product_id is [id, name] if present
+                    desc  = line.get("name") or (
+                        line["product_id"][1] if isinstance(line.get("product_id"), (list, tuple)) and len(line["product_id"]) >= 2
+                        else "—"
+                    )
+                    qty   = float(line.get("quantity", 1) or 1)
+                    rate  = float(line.get("price_unit", 0) or 0)
+                    total = float(line.get("price_subtotal", qty * rate) or 0)
+                    subtotal += total
+                    rows.append([
+                        Paragraph(str(desc), s_td),
+                        Paragraph(f"{qty:g}",              s_td_c),
+                        Paragraph(f"{rupee} {rate:,.2f}",  s_td_r),
+                        Paragraph(f"{rupee} {total:,.2f}", s_td_r),
+                    ])
+
+                items_table = Table(rows, colWidths=col_w, repeatRows=1)
+                ts = TableStyle([
+                    ("BACKGROUND",    (0, 0), (-1, 0),  BRAND_BLUE),
+                    ("TOPPADDING",    (0, 0), (-1, -1), 8),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                    ("LEFTPADDING",   (0, 0), (-1, -1), 10),
+                    ("RIGHTPADDING",  (0, 0), (-1, -1), 10),
+                    ("BOX",           (0, 0), (-1, -1), 0.5, BORDER_GREY),
+                    ("LINEBELOW",     (0, 0), (-1, -1), 0.3, BORDER_GREY),
+                    ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+                ])
+                for i in range(1, len(rows)):
+                    ts.add("BACKGROUND", (0, i), (-1, i), colors.white if i % 2 == 1 else ROW_ALT)
+                items_table.setStyle(ts)
+                elements.append(items_table)
+            else:
+                subtotal = amount_total
+
+            elements.append(Spacer(1, 4 * mm))
+
+            # ── 4. TOTALS BLOCK (right-aligned) ──────────────────────────────
+            if payment_state == "paid":
+                amount_paid = amount_total
+                balance_due = 0.0
+            else:
+                amount_paid = 0.0
+                balance_due = amount_total
+
+            totals_rows: list = []
+            if line_items:
+                totals_rows.append([Paragraph("Subtotal", s_tot_l), Paragraph(f"{rupee} {subtotal:,.2f}", s_tot_r)])
+            totals_rows.append([Paragraph("Total", s_tot_l), Paragraph(f"{rupee} {amount_total:,.2f}", s_tot_r)])
+            if amount_paid > 0:
+                totals_rows.append([
+                    Paragraph(f"Paid ({payment_label})", s_tot_l),
+                    Paragraph(f"- {rupee} {amount_paid:,.2f}", s_tot_r),
+                ])
+            # Balance due — dark highlight row
+            totals_rows.append([Paragraph("Balance Due", s_bal_l), Paragraph(f"{rupee} {balance_due:,.2f}", s_bal_r)])
+
+            n = len(totals_rows)
+            totals_table = Table(totals_rows, colWidths=[page_w * 0.42, page_w * 0.18])
+            ts2 = TableStyle([
+                ("TOPPADDING",    (0, 0),    (-1, -1),   6),
+                ("BOTTOMPADDING", (0, 0),    (-1, -1),   6),
+                ("LEFTPADDING",   (0, 0),    (-1, -1),   12),
+                ("RIGHTPADDING",  (0, 0),    (-1, -1),   12),
+                ("LINEBELOW",     (0, 0),    (-1, n - 2), 0.3, BORDER_GREY),
+                ("BOX",           (0, 0),    (-1, n - 2), 0.5, BORDER_GREY),
+                ("BACKGROUND",    (0, 0),    (-1, n - 2), colors.white),
+                ("BACKGROUND",    (0, n - 1), (-1, n - 1), BRAND_BLUE),
+                ("TOPPADDING",    (0, n - 1), (-1, n - 1), 10),
+                ("BOTTOMPADDING", (0, n - 1), (-1, n - 1), 10),
+            ])
+            totals_table.setStyle(ts2)
+
+            # Spacer on the left pushes totals to the right
+            wrapper = Table(
+                [[Paragraph("", s_label), totals_table]],
+                colWidths=[page_w * 0.4, page_w * 0.6],
+            )
+            wrapper.setStyle(TableStyle([
+                ("TOPPADDING",    (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 0),
+            ]))
+            elements.append(wrapper)
+            elements.append(Spacer(1, 10 * mm))
+
+            # ── 5. FOOTER ────────────────────────────────────────────────────
+            elements.append(HRFlowable(width="100%", thickness=1, color=BORDER_GREY, spaceAfter=6))
+            support_email = getattr(settings, "COMPANY_EMAIL", "support@flexmindinnovations.com")
             elements.append(Paragraph(
-                "This is a summary invoice generated from your account.<br/>For official invoices, please log into your Flexmind Innovations account portal.",
-                footer_style
+                f"Thank you for your business. For queries regarding this invoice, "
+                f"please contact us at {support_email}.",
+                s_footer,
             ))
 
-            # Build PDF
             doc.build(elements)
             pdf_bytes = pdf_buffer.getvalue()
-
-            logger.info(
-                "Invoice PDF generated successfully",
-                extra={"invoice_name": invoice_number, "size": len(pdf_bytes)}
-            )
+            logger.info("Invoice PDF generated", extra={"invoice_name": invoice_number, "size": len(pdf_bytes)})
             return pdf_bytes
 
         except Exception as e:
-            logger.error(
-                "Failed to generate invoice PDF",
-                extra={"invoice_name": invoice_data.get("name"), "error": str(e)}
-            )
+            logger.error("Failed to generate invoice PDF",
+                         extra={"invoice_name": invoice_data.get("name"), "error": str(e)})
             raise
 
     def list_all_invoices(self, limit: int = Pagination.DEFAULT_LIMIT, offset: int = ApiDefaults.DEFAULT_OFFSET) -> List[Dict[str, Any]]:

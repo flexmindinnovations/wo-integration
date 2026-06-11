@@ -1,14 +1,21 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.conversation_message import ConversationMessage
+from app.models.conversation_message import ConversationMessage, MessageRole
 from app.schemas.conversation import ConversationMessageOut, ConversationSummary
+from app.services.ws_manager import manager
+from app.services.ai_pipeline import process_ai_reply, serialize_message
 
 router = APIRouter(prefix="/conversations", tags=["Conversations"])
 logger = logging.getLogger(__name__)
+
+
+class MessagePayload(BaseModel):
+    content: str
 
 
 @router.get(
@@ -17,10 +24,6 @@ logger = logging.getLogger(__name__)
     summary="List all conversations with their last message",
 )
 def list_conversations(db: Session = Depends(get_db)):
-    """
-    Return one summary row per unique phone number, showing the most recent
-    message content, role, timestamp, and total message count.
-    """
     latest_subq = (
         db.query(
             ConversationMessage.contact_phone,
@@ -68,11 +71,6 @@ def get_conversation(
     limit: int = 50,
     db: Session = Depends(get_db),
 ):
-    """
-    Return all messages for a given phone number, oldest first.
-    Supports pagination with skip/limit.
-    Returns 404 if no conversation exists for that phone.
-    """
     messages = (
         db.query(ConversationMessage)
         .filter(ConversationMessage.contact_phone == phone)
@@ -87,3 +85,34 @@ def get_conversation(
             detail=f"No conversation found for phone {phone}",
         )
     return messages
+
+
+@router.post(
+    "/{phone}/message",
+    response_model=ConversationMessageOut,
+    summary="Send a message and get an AI reply (real WhatsApp pipeline)",
+)
+async def send_chat_message(
+    phone: str,
+    payload: MessagePayload,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    Saves the message as an inbound customer message (role=user) and triggers
+    the full AI pipeline: Odoo context fetch → Gemini reply → WhatsApp delivery
+    → WebSocket broadcast. This is the same pipeline the real WhatsApp webhook uses.
+    """
+    msg = ConversationMessage(
+        contact_phone=phone,
+        role=MessageRole.user,
+        content=payload.content,
+        wamid=None,
+    )
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+
+    background_tasks.add_task(process_ai_reply, phone, payload.content)
+    logger.info("Chat message received", extra={"phone": phone})
+    return msg

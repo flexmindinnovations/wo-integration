@@ -1,6 +1,8 @@
 import logging
+from typing import cast
 from sqlalchemy.orm import Session
 from google import genai
+from google.genai.types import ContentDict, ContentListUnionDict, PartDict
 
 from app.config import settings
 from app.models.conversation_message import ConversationMessage
@@ -39,31 +41,32 @@ class AiService:
         history = list(reversed(history))
 
         # Build conversation history for Gemini
-        # Gemini expects: [{"role": "user"/"model", "parts": [{"text": "..."}]}]
-        messages = []
+        messages: list[ContentDict] = []
         for msg in history:
             role = "user" if msg.role.value == "user" else "model"
-            messages.append({
-                "role": role,
-                "parts": [{"text": msg.content}]
-            })
+            messages.append(ContentDict(
+                role=role,
+                parts=[PartDict(text=msg.content)],
+            ))
 
-        # Build content for the API call
-        contents = messages + [{"role": "user", "parts": [{"text": _SYSTEM_PROMPT}]}]
+        contents: ContentListUnionDict = cast(ContentListUnionDict, messages)
 
-        # Call Gemini API with new google.genai package
         response = self._client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=settings.GEMINI_MODEL,
             contents=contents,
             config={
                 "max_output_tokens": 1024,
+                "system_instruction": _SYSTEM_PROMPT,
             }
         )
 
-        reply: str = response.text
+        reply = response.text or ""
+        if not reply and response.parts:
+            first_part = response.parts[0]
+            reply = first_part.text or ""
         logger.info(
             "AI reply generated",
-            extra={"phone": phone, "model": "gemini-2.5-flash"},
+            extra={"phone": phone, "model": settings.GEMINI_MODEL},
         )
         return reply
 
@@ -88,26 +91,31 @@ class AiService:
         )
         history = list(reversed(history))
 
-        messages = [
-            {"role": "user" if msg.role.value == "user" else "model",
-             "parts": [{"text": msg.content}]}
+        messages: list[ContentDict] = [
+            ContentDict(
+                role="user" if msg.role.value == "user" else "model",
+                parts=[PartDict(text=msg.content)],
+            )
             for msg in history
         ]
 
         system_prompt = self._build_context_aware_prompt(contact, odoo_context)
 
-        # Build content with system prompt
-        contents = messages + [{"role": "user", "parts": [{"text": system_prompt}]}]
+        contents: ContentListUnionDict = cast(ContentListUnionDict, messages)
 
         response = self._client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=settings.GEMINI_MODEL,
             contents=contents,
             config={
                 "max_output_tokens": 1024,
+                "system_instruction": system_prompt,
             }
         )
 
-        reply: str = response.text
+        reply = response.text or ""
+        if not reply and response.parts:
+            first_part = response.parts[0]
+            reply = first_part.text or ""
         has_invoices = odoo_context is not None and odoo_context.get("invoices")
         has_orders = odoo_context is not None and odoo_context.get("orders")
         access_success = odoo_context.get("access_success", False) if odoo_context else False

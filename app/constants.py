@@ -266,7 +266,7 @@ class ContactSync:
 # ============================================================================
 class WhatsAppApi:
     """WhatsApp Cloud API constants"""
-    BASE_URL = "https://graph.instagram.com/v25.0"
+    BASE_URL = "https://graph.facebook.com/v25.0"
     API_VERSION = "v25.0"
     MESSAGE_TYPE_TEXT = "text"
     MESSAGE_TYPE_TEMPLATE = "template"

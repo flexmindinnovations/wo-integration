@@ -3,6 +3,7 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -184,9 +185,55 @@ def send_invoice_whatsapp(
             db.commit()
             
         return {"status": "success", "whatsapp_message_id": wa_msg_id}
-        
+
     except HTTPException as he:
         raise he
     except Exception as e:
         logger.error("Failed to dispatch WhatsApp invoice notification", extra={"error": str(e)})
         raise HTTPException(status_code=500, detail=f"WhatsApp error: {str(e)}")
+
+
+@router.get(
+    "/{invoice_id}/pdf",
+    summary="Download invoice PDF from Odoo",
+    response_class=Response,
+)
+def download_invoice_pdf(invoice_id: int):
+    """
+    Return invoice PDF inline so the browser can display it.
+    Tries the Odoo custom PDF API first; falls back to local PDF generation
+    (same logic used when sending PDFs via WhatsApp).
+    """
+    try:
+        odoo = OdooService()
+        inv_data = None
+        pdf_bytes = None
+
+        # Primary: fetch pre-rendered PDF from Odoo custom API
+        try:
+            pdf_bytes = odoo.get_invoice_pdf(invoice_id)
+        except Exception as odoo_err:
+            logger.warning(
+                f"Odoo PDF API failed for invoice {invoice_id}, trying local generation",
+                extra={"error": str(odoo_err)},
+            )
+
+        # Fallback: generate PDF locally from invoice data
+        if not pdf_bytes:
+            try:
+                inv_data = odoo.get_invoice(invoice_id)
+            except Exception as fetch_err:
+                raise HTTPException(status_code=404, detail=f"Invoice {invoice_id} not found: {fetch_err}")
+            pdf_bytes = odoo.generate_invoice_pdf(inv_data)
+
+        filename = inv_data.get("name", f"invoice-{invoice_id}") if inv_data else f"invoice-{invoice_id}"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"inline; filename=\"{filename}.pdf\""},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to serve PDF for invoice {invoice_id}", extra={"error": str(e)})
+        raise HTTPException(status_code=500, detail=f"Could not generate PDF: {str(e)}")
