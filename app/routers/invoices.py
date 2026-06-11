@@ -220,8 +220,13 @@ def send_payment_reminder(invoice_id: int, db: Session = Depends(get_db)):
         if contact:
             phone = contact.phone
         else:
-            partners = odoo._execute("res.partner", "read", [[partner_id]], {"fields": ["phone", "mobile"]})
-            raw_phone = (partners[0].get("mobile") or partners[0].get("phone") or "") if partners else ""
+            # Try phone + mobile; mobile may not exist on all Odoo versions
+            try:
+                partners = odoo._execute("res.partner", "read", [[partner_id]], {"fields": ["phone", "mobile"]})
+                raw_phone = (partners[0].get("mobile") or partners[0].get("phone") or "") if partners else ""
+            except Exception:
+                partners = odoo._execute("res.partner", "read", [[partner_id]], {"fields": ["phone"]})
+                raw_phone = (partners[0].get("phone") or "") if partners else ""
             phone = "".join(ch for ch in raw_phone if ch.isdigit())
 
         if not phone:

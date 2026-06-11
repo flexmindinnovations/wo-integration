@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, List, Any
 
 class InvoiceLineCreate(BaseModel):
@@ -20,10 +20,18 @@ class InvoiceLineOut(BaseModel):
 
 class InvoiceOut(BaseModel):
     id: int
-    name: str
+    name: Optional[str] = None
     partner_id: Any
     invoice_date: Any
     amount_total: float
     state: str
     payment_state: str
     invoice_line_ids: Optional[List[InvoiceLineOut]] = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def coerce_odoo_false(cls, v: Any) -> Optional[str]:
+        # Odoo returns False (bool) for draft invoices with no sequence number yet
+        if v is False or v is None:
+            return None
+        return str(v)
