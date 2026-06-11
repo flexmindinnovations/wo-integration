@@ -223,12 +223,16 @@ class OdooService:
 
         models_to_try = [
             (OdooModels.ACCOUNT_MOVE, base_domain, [
-                [OdooFieldsInvoice.ID, OdooFieldsInvoice.NAME, OdooFieldsInvoice.INVOICE_DATE, OdooFieldsInvoice.AMOUNT_TOTAL, OdooFieldsInvoice.PAYMENT_STATE],
+                # Odoo 16+: invoice_date_due
+                [OdooFieldsInvoice.ID, OdooFieldsInvoice.NAME, OdooFieldsInvoice.INVOICE_DATE, OdooFieldsInvoice.INVOICE_DATE_DUE, OdooFieldsInvoice.AMOUNT_TOTAL, OdooFieldsInvoice.PAYMENT_STATE],
+                # Odoo ≤15: due_date
                 [OdooFieldsInvoice.ID, OdooFieldsInvoice.NAME, OdooFieldsInvoice.INVOICE_DATE, OdooFieldsInvoice.DUE_DATE, OdooFieldsInvoice.AMOUNT_TOTAL, OdooFieldsInvoice.PAYMENT_STATE],
+                # Fallback: no due date
+                [OdooFieldsInvoice.ID, OdooFieldsInvoice.NAME, OdooFieldsInvoice.INVOICE_DATE, OdooFieldsInvoice.AMOUNT_TOTAL, OdooFieldsInvoice.PAYMENT_STATE],
             ]),
             (OdooModels.ACCOUNT_INVOICE, [
                 [OdooFieldsInvoice.PARTNER_ID, "=", partner_id],
-                *([[ OdooFieldsInvoice.PAYMENT_STATE, "!=", OdooPaymentStates.PAID]] if unpaid_only else []),
+                *([[OdooFieldsInvoice.PAYMENT_STATE, "!=", OdooPaymentStates.PAID]] if unpaid_only else []),
             ], [
                 [OdooFieldsInvoice.ID, OdooFieldsInvoice.NAME, OdooFieldsInvoice.INVOICE_DATE, OdooFieldsInvoice.DUE_DATE, OdooFieldsInvoice.AMOUNT_TOTAL, OdooFieldsInvoice.PAYMENT_STATE],
             ]),

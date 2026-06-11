@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import SessionLocal, get_db
 from app.models.campaign_message import CampaignMessage, DeliveryStatus
-from app.models.conversation_message import ConversationMessage, MessageRole
+from app.models.conversation_message import ConversationMessage, MessageRole, MessageDeliveryStatus
 from app.models.contact import Contact
 from app.services.whatsapp_service import WhatsAppService
 from app.services.odoo_service import OdooService
@@ -195,39 +195,72 @@ def _send_invoice_pdfs(phone: str, invoices: list[dict], db: Session) -> None:
 
 
 def _process_status_update(event: dict, db: Session) -> None:
-    """Map a WhatsApp status event to the corresponding CampaignMessage row."""
+    """
+    Map a WhatsApp status event to CampaignMessage and ConversationMessage rows.
+    Broadcasts a WebSocket status_update so the chat UI can show delivery ticks.
+    """
     wamid: str | None = event.get("id")
     raw_status: str | None = event.get("status")
 
-    _status_map = {
+    _campaign_status_map = {
         "sent": DeliveryStatus.sent,
         "delivered": DeliveryStatus.delivered,
         "read": DeliveryStatus.read,
         "failed": DeliveryStatus.failed,
     }
-    status = _status_map.get(raw_status or "")
-    if not wamid or not status:
+    _conv_status_map = {
+        "sent": MessageDeliveryStatus.sent,
+        "delivered": MessageDeliveryStatus.delivered,
+        "read": MessageDeliveryStatus.read,
+        "failed": MessageDeliveryStatus.failed,
+    }
+    campaign_status = _campaign_status_map.get(raw_status or "")
+    conv_status = _conv_status_map.get(raw_status or "")
+    if not wamid or not campaign_status:
         return
 
-    msg = (
+    # Update campaign message if one exists
+    campaign_msg = (
         db.query(CampaignMessage)
         .filter(CampaignMessage.whatsapp_message_id == wamid)
         .first()
     )
-    if not msg:
-        logger.debug("No message record for wamid", extra={"wamid": wamid})
-        return
+    if campaign_msg:
+        campaign_msg.delivery_status = campaign_status
+        if campaign_status == DeliveryStatus.failed:
+            errors = event.get("errors", [])
+            campaign_msg.error_message = errors[0].get("message") if errors else "Delivery failed"
 
-    msg.delivery_status = status
-    if status == DeliveryStatus.failed:
-        errors = event.get("errors", [])
-        msg.error_message = errors[0].get("message") if errors else "Delivery failed"
-
-    db.commit()
-    logger.info(
-        "Delivery status updated",
-        extra={"wamid": wamid, "status": raw_status},
+    # Update conversation message if one exists (AI reply / chat message)
+    conv_msg = (
+        db.query(ConversationMessage)
+        .filter(ConversationMessage.wamid == wamid)
+        .first()
     )
+    if conv_msg and conv_status:
+        conv_msg.delivery_status = conv_status
+        db.commit()
+        # Broadcast so the chat UI updates the tick in real time
+        import asyncio
+        from app.services.ai_pipeline import serialize_message as _serialize
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(
+                    manager.broadcast({
+                        "type": "status_update",
+                        "wamid": wamid,
+                        "status": raw_status,
+                        "message_id": conv_msg.id,
+                        "contact_phone": conv_msg.contact_phone,
+                    })
+                )
+        except Exception as ws_err:
+            logger.debug("WebSocket broadcast for status_update failed", extra={"error": str(ws_err)})
+    else:
+        db.commit()
+
+    logger.info("Delivery status updated", extra={"wamid": wamid, "status": raw_status})
 
 
 def _handle_incoming_message(message: dict, db: Session, background_tasks: BackgroundTasks) -> None:

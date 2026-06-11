@@ -1,6 +1,6 @@
 import logging
 from app.database import SessionLocal
-from app.models.conversation_message import ConversationMessage, MessageRole
+from app.models.conversation_message import ConversationMessage, MessageRole, MessageDeliveryStatus
 from app.models.contact import Contact
 from app.services.ai_service import AiService
 from app.services.whatsapp_service import WhatsAppService
@@ -23,7 +23,8 @@ def serialize_message(msg: ConversationMessage) -> dict:
         "role": msg.role.value,
         "content": msg.content,
         "wamid": msg.wamid,
-        "created_at": msg.created_at.isoformat() + "Z",  # UTC — browser converts to local time
+        "delivery_status": msg.delivery_status.value if msg.delivery_status else None,
+        "created_at": msg.created_at.isoformat() + "Z",
     }
 
 
@@ -95,8 +96,15 @@ async def process_ai_reply(phone: str, text_body: str) -> None:
         await manager.broadcast({"type": "new_message", "message": serialize_message(assistant_msg)})
 
         try:
-            WhatsAppService().send_text(phone, ai_reply)
-            logger.info("AI reply sent via WhatsApp", extra={"phone": phone})
+            wa_result = WhatsAppService().send_text(phone, ai_reply)
+            wamid = (wa_result.get("messages") or [{}])[0].get("id")
+            if wamid:
+                assistant_msg.wamid = wamid
+                assistant_msg.delivery_status = MessageDeliveryStatus.sent
+                db.commit()
+                # Re-broadcast with updated wamid so frontend can track status
+                await manager.broadcast({"type": "new_message", "message": serialize_message(assistant_msg)})
+            logger.info("AI reply sent via WhatsApp", extra={"phone": phone, "wamid": wamid})
         except Exception as wa_err:
             logger.warning("WhatsApp send failed for AI reply", extra={"phone": phone, "error": str(wa_err)})
 

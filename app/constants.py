@@ -54,7 +54,8 @@ class OdooFieldsInvoice:
     ID = "id"
     NAME = "name"
     INVOICE_DATE = "invoice_date"
-    DUE_DATE = "due_date"
+    INVOICE_DATE_DUE = "invoice_date_due"   # Odoo 16+
+    DUE_DATE = "due_date"                   # Odoo ≤15 alias
     PARTNER_ID = "partner_id"
     AMOUNT_TOTAL = "amount_total"
     STATE = "state"

@@ -11,6 +11,13 @@ class MessageRole(str, enum.Enum):
     assistant = "assistant"
 
 
+class MessageDeliveryStatus(str, enum.Enum):
+    sent = "sent"
+    delivered = "delivered"
+    read = "read"
+    failed = "failed"
+
+
 class ConversationMessage(Base):
     __tablename__ = "conversation_messages"
 
@@ -21,6 +28,9 @@ class ConversationMessage(Base):
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
     wamid: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True, index=True)
+    delivery_status: Mapped[Optional[MessageDeliveryStatus]] = mapped_column(
+        Enum(MessageDeliveryStatus, name="messagedeliverystatus"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False, index=True
     )

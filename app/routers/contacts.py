@@ -130,3 +130,35 @@ def update_contact(contact_id: int, payload: ContactUpdate, db: Session = Depend
     except Exception as e:
         logger.error("Failed to update contact", extra={"contact_id": contact_id, "error": str(e)})
         raise HTTPException(status_code=500, detail="Failed to update contact in Odoo")
+
+
+@router.delete(
+    "/{contact_id}",
+    status_code=204,
+    summary="Archive a contact in Odoo and remove from local database",
+)
+def delete_contact(contact_id: int, db: Session = Depends(get_db)):
+    """
+    Archives the partner in Odoo (sets active=False) so history is preserved,
+    then removes the local record.
+    """
+    contact = db.query(Contact).filter(Contact.id == contact_id).first()
+    if not contact:
+        raise HTTPException(status_code=404, detail=f"Contact {contact_id} not found")
+
+    # Archive in Odoo if linked
+    if contact.odoo_partner_id:
+        try:
+            OdooService()._execute(
+                "res.partner", "write",
+                [[contact.odoo_partner_id], {"active": False}]
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not archive partner in Odoo — deleting locally anyway",
+                extra={"partner_id": contact.odoo_partner_id, "error": str(e)},
+            )
+
+    db.delete(contact)
+    db.commit()
+    logger.info("Contact deleted", extra={"contact_id": contact_id})

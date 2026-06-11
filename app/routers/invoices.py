@@ -193,6 +193,62 @@ def send_invoice_whatsapp(
         raise HTTPException(status_code=500, detail=f"WhatsApp error: {str(e)}")
 
 
+@router.post(
+    "/{invoice_id}/reminder",
+    summary="Send a payment reminder via WhatsApp for an unpaid invoice",
+)
+def send_payment_reminder(invoice_id: int, db: Session = Depends(get_db)):
+    """
+    Fetches invoice details, resolves the customer's phone number, then sends
+    a WhatsApp text reminder. Only sends if the invoice is not fully paid.
+    """
+    try:
+        odoo = OdooService()
+        invoice = odoo.get_invoice(invoice_id)
+
+        payment_state = invoice.get("payment_state", "not_paid")
+        if payment_state == "paid":
+            raise HTTPException(status_code=422, detail="Invoice is already paid — no reminder needed")
+
+        raw_partner = invoice.get("partner_id")
+        if not raw_partner or not isinstance(raw_partner, (list, tuple)):
+            raise HTTPException(status_code=422, detail="Invoice has no linked partner")
+        partner_id, partner_name = raw_partner[0], raw_partner[1]
+
+        # Resolve phone from local DB first, then Odoo
+        contact = db.query(Contact).filter(Contact.odoo_partner_id == partner_id).first()
+        if contact:
+            phone = contact.phone
+        else:
+            partners = odoo._execute("res.partner", "read", [[partner_id]], {"fields": ["phone", "mobile"]})
+            raw_phone = (partners[0].get("mobile") or partners[0].get("phone") or "") if partners else ""
+            phone = "".join(ch for ch in raw_phone if ch.isdigit())
+
+        if not phone:
+            raise HTTPException(status_code=422, detail=f"No phone number found for partner {partner_name}")
+
+        invoice_name = invoice.get("name", f"INV-{invoice_id}")
+        amount = float(invoice.get("amount_total", 0))
+        due_date = invoice.get("invoice_date_due") or invoice.get("due_date") or invoice.get("invoice_date") or "N/A"
+        first_name = partner_name.split()[0] if partner_name else "there"
+
+        reminder_text = (
+            f"Hi {first_name}, this is a friendly reminder that invoice *{invoice_name}* "
+            f"for *₹{amount:,.2f}* is due on *{due_date}*.\n\n"
+            f"Please let us know if you have any questions or need assistance with payment."
+        )
+
+        WhatsAppService().send_text(phone, reminder_text)
+        logger.info("Payment reminder sent", extra={"invoice_id": invoice_id, "phone": phone})
+        return {"status": "sent", "phone": phone, "invoice": invoice_name}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to send payment reminder", extra={"invoice_id": invoice_id, "error": str(e)})
+        raise HTTPException(status_code=500, detail=f"Failed to send reminder: {str(e)}")
+
+
 @router.get(
     "/{invoice_id}/pdf",
     summary="Download invoice PDF from Odoo",
